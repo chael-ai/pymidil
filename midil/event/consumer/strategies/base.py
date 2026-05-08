@@ -93,12 +93,19 @@ class EventConsumer(ABC):
 
         results = await asyncio.gather(*tasks, return_exceptions=True)
 
-        if any(isinstance(r, RetryableEventError) for r in results):
-            requeue = True
+        requeue = False
+
+        for result in results:
+            if isinstance(result, RetryableEventError):
+                requeue = True
+            elif isinstance(result, Exception):
+                logger.error(f"Subscriber error on event {message.id}: {result}")
+
+        if requeue:
             logger.debug(
-                f"Some subscribers failed for event {message.id}, requeue={requeue}"
+                f"Retryable subscriber failure for event {message.id} -> requeue"
             )
-            return await self.nack(message, requeue=requeue)
+            return await self.nack(message, requeue=True)
 
         return await self.ack(message)
 

@@ -12,7 +12,7 @@ async def handle_event(event: Message):
 
 
 # Configure the webhook consumer
-config = WebhookConsumerEventConfig(endpoint="/evento")
+config = WebhookConsumerEventConfig(endpoint="/event/{tenant_id}/{workflow_id}/webhook")
 consumer = WebhookConsumer(config)
 consumer.subscribe(FunctionSubscriber(handle_event))
 
