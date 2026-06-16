@@ -1,5 +1,3 @@
-from __future__ import annotations
-
 from abc import ABC, abstractmethod
 from typing import Generic, TypeVar
 
@@ -10,5 +8,5 @@ ItemT = TypeVar("ItemT")
 
 class OffsetPaginationStrategy(ABC, Generic[ItemT]):
     @abstractmethod
-    async def paginate(self, *, offset: int = 0, limit: int) -> OffsetPage[ItemT]:
+    async def paginate(self, size: int, offset: int = 0) -> OffsetPage[ItemT]:
         ...

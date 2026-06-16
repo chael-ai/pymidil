@@ -13,6 +13,9 @@ from midil.midilapi.pagination.strategies.offset import (
     OffsetPage,
     OffsetPageMapper,
 )
+from midil.midilapi.pagination.integrations.mongodb import (
+    AsyncMongoCursorPaginationStrategy,
+)
 
 __all__ = [
     "Page",
@@ -26,4 +29,5 @@ __all__ = [
     "OffsetPaginationStrategy",
     "OffsetPage",
     "OffsetPageMapper",
+    "AsyncMongoCursorPaginationStrategy",
 ]
