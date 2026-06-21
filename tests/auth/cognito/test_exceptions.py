@@ -1,15 +1,15 @@
 """
-Tests for midil.auth.cognito._exceptions
+Tests for midil.auth.cognito.exceptions
 """
 
 import pytest
 
-from midil.auth.exceptions import (
+from pymidil.auth.exceptions import (
     BaseAuthError,
     AuthenticationError,
     AuthorizationError,
 )
-from midil.auth.cognito._exceptions import (
+from pymidil.auth.cognito.exceptions import (
     CognitoAuthenticationError,
     CognitoAuthorizationError,
 )

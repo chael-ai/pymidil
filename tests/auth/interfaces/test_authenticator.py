@@ -5,8 +5,8 @@ Tests for midil.auth.interfaces.authenticator
 import pytest
 from abc import ABC
 from unittest.mock import AsyncMock
-from midil.auth.interfaces.authenticator import AuthNProvider
-from midil.auth.interfaces.models import AuthNToken, AuthNHeaders
+from pymidil.auth.interfaces.authenticator import AuthNProvider
+from pymidil.auth.interfaces.types import AuthNToken, AuthNHeaders
 
 # Mark all async tests in this module to use anyio
 pytestmark = pytest.mark.anyio

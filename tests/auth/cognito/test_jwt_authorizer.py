@@ -6,12 +6,12 @@ from unittest.mock import AsyncMock, Mock, patch
 import jwt
 import pytest
 
-from midil.auth.cognito._exceptions import CognitoAuthorizationError
-from midil.auth.cognito.jwt_authorizer import (
+from pymidil.auth.cognito.exceptions import CognitoAuthorizationError
+from pymidil.auth.cognito.jwt_authorizer import (
     CognitoJWTAuthorizer,
     CognitoTokenClaims,
 )
-from midil.auth.interfaces.models import AuthZTokenClaims
+from pymidil.auth.interfaces.types import AuthZTokenClaims
 
 # Mark all async tests in this module to use anyio
 pytestmark = pytest.mark.anyio
@@ -188,7 +188,7 @@ class TestCognitoJWTAuthorizer:
         """Test CognitoJWTAuthorizer initialization without audience."""
         assert authorizer_no_audience.audience is None
 
-    @patch("midil.auth.cognito.jwt_authorizer.PyJWKClient")
+    @patch("pymidil.auth.cognito.jwt_authorizer.PyJWKClient")
     def test_jwk_client_initialization(self, mock_jwk_client_class: Mock) -> None:
         """Test that PyJWKClient is initialized correctly."""
         # Create authorizer after mock is applied
@@ -205,7 +205,7 @@ class TestCognitoJWTAuthorizer:
             max_cached_keys=32,
         )
 
-    @patch("midil.auth.cognito.jwt_authorizer.asyncio.to_thread")
+    @patch("pymidil.auth.cognito.jwt_authorizer.asyncio.to_thread")
     async def test_get_signing_key_success(
         self,
         mock_to_thread: Mock,
@@ -224,8 +224,8 @@ class TestCognitoJWTAuthorizer:
             client.get_signing_key_from_jwt, "test-token"
         )
 
-    @patch("midil.auth.cognito.jwt_authorizer.asyncio.to_thread")
-    @patch("midil.auth.cognito.jwt_authorizer.PyJWKClient")
+    @patch("pymidil.auth.cognito.jwt_authorizer.asyncio.to_thread")
+    @patch("pymidil.auth.cognito.jwt_authorizer.PyJWKClient")
     async def test_get_signing_key_with_retry(
         self, mock_jwk_client_class: Mock, mock_to_thread: Mock
     ) -> None:
@@ -250,7 +250,7 @@ class TestCognitoJWTAuthorizer:
         assert mock_to_thread.call_count == 2
         assert mock_jwk_client_class.call_count == 2  # initial + retry
 
-    @patch("midil.auth.cognito.jwt_authorizer.asyncio.to_thread")
+    @patch("pymidil.auth.cognito.jwt_authorizer.asyncio.to_thread")
     async def test_get_signing_key_retry_failure(
         self, mock_to_thread: Mock, authorizer: CognitoJWTAuthorizer
     ) -> None:
@@ -265,7 +265,7 @@ class TestCognitoJWTAuthorizer:
         ):
             await authorizer._get_signing_key("test-token")
 
-    @patch("midil.auth.cognito.jwt_authorizer.jwt.decode")
+    @patch("pymidil.auth.cognito.jwt_authorizer.jwt.decode")
     @patch.object(CognitoJWTAuthorizer, "_get_signing_key")
     async def test_verify_success(
         self,
@@ -301,7 +301,7 @@ class TestCognitoJWTAuthorizer:
             },
         )
 
-    @patch("midil.auth.cognito.jwt_authorizer.jwt.decode")
+    @patch("pymidil.auth.cognito.jwt_authorizer.jwt.decode")
     @patch.object(CognitoJWTAuthorizer, "_get_signing_key")
     async def test_verify_without_audience(
         self,
@@ -345,7 +345,7 @@ class TestCognitoJWTAuthorizer:
         signing_key.key = "test-key"
         mock_get_signing_key.return_value = signing_key
 
-        with patch("midil.auth.cognito.jwt_authorizer.jwt.decode") as mock_decode:
+        with patch("pymidil.auth.cognito.jwt_authorizer.jwt.decode") as mock_decode:
             mock_decode.side_effect = jwt.InvalidTokenError("Token is invalid")
 
             with pytest.raises(
@@ -363,7 +363,7 @@ class TestCognitoJWTAuthorizer:
         signing_key.key = "test-key"
         mock_get_signing_key.return_value = signing_key
 
-        with patch("midil.auth.cognito.jwt_authorizer.jwt.decode") as mock_decode:
+        with patch("pymidil.auth.cognito.jwt_authorizer.jwt.decode") as mock_decode:
             mock_decode.side_effect = jwt.DecodeError("Cannot decode token")
 
             with pytest.raises(
@@ -394,7 +394,7 @@ class TestCognitoJWTAuthorizer:
         with pytest.raises(RuntimeError, match="Unexpected error"):
             await authorizer.verify("test-token")
 
-    @patch("midil.auth.cognito.jwt_authorizer.jwt.decode")
+    @patch("pymidil.auth.cognito.jwt_authorizer.jwt.decode")
     @patch.object(CognitoJWTAuthorizer, "_get_signing_key")
     async def test_verify_creates_cognito_claims(
         self,
@@ -435,8 +435,8 @@ class TestCognitoJWTAuthorizer:
 
 
 @pytest.mark.asyncio
-@patch("midil.auth.cognito.jwt_authorizer.jwt.decode")
-@patch("midil.auth.cognito.jwt_authorizer.CognitoJWTAuthorizer._get_signing_key")
+@patch("pymidil.auth.cognito.jwt_authorizer.jwt.decode")
+@patch("pymidil.auth.cognito.jwt_authorizer.CognitoJWTAuthorizer._get_signing_key")
 async def test_verify_valid_token(
     mock_get_key: Mock, mock_decode: Mock, valid_token_payload: Dict[str, Any]
 ) -> None:
@@ -456,8 +456,8 @@ async def test_verify_valid_token(
 
 
 @pytest.mark.asyncio
-@patch("midil.auth.cognito.jwt_authorizer.jwt.decode")
-@patch("midil.auth.cognito.jwt_authorizer.CognitoJWTAuthorizer._get_signing_key")
+@patch("pymidil.auth.cognito.jwt_authorizer.jwt.decode")
+@patch("pymidil.auth.cognito.jwt_authorizer.CognitoJWTAuthorizer._get_signing_key")
 async def test_token_expired(
     mock_get_key: Mock, mock_decode: Mock, valid_token_payload: Dict[str, Any]
 ) -> None:
@@ -478,8 +478,8 @@ async def test_token_expired(
 
 
 @pytest.mark.asyncio
-@patch("midil.auth.cognito.jwt_authorizer.jwt.decode")
-@patch("midil.auth.cognito.jwt_authorizer.CognitoJWTAuthorizer._get_signing_key")
+@patch("pymidil.auth.cognito.jwt_authorizer.jwt.decode")
+@patch("pymidil.auth.cognito.jwt_authorizer.CognitoJWTAuthorizer._get_signing_key")
 async def test_issuer_mismatch(
     mock_get_key: Mock, mock_decode: Mock, valid_token_payload: Dict[str, Any]
 ) -> None:
@@ -498,8 +498,8 @@ async def test_issuer_mismatch(
 
 
 @pytest.mark.asyncio
-@patch("midil.auth.cognito.jwt_authorizer.jwt.decode")
-@patch("midil.auth.cognito.jwt_authorizer.CognitoJWTAuthorizer._get_signing_key")
+@patch("pymidil.auth.cognito.jwt_authorizer.jwt.decode")
+@patch("pymidil.auth.cognito.jwt_authorizer.CognitoJWTAuthorizer._get_signing_key")
 async def test_audience_mismatch(
     mock_get_key: Mock, mock_decode: Mock, valid_token_payload: Dict[str, Any]
 ) -> None:
@@ -517,7 +517,7 @@ async def test_audience_mismatch(
 
 @pytest.mark.asyncio
 async def test_concurrent_signing_key_fetch() -> None:
-    from midil.auth.cognito.jwt_authorizer import CognitoJWTAuthorizer
+    from pymidil.auth.cognito.jwt_authorizer import CognitoJWTAuthorizer
 
     authorizer: CognitoJWTAuthorizer = CognitoJWTAuthorizer(
         "test-pool", "us-west-2", audience="test-client-id"
@@ -526,7 +526,7 @@ async def test_concurrent_signing_key_fetch() -> None:
     with patch.object(
         authorizer, "_get_signing_key", new_callable=AsyncMock
     ) as mock_get_key, patch(
-        "midil.auth.cognito.jwt_authorizer.jwt.decode"
+        "pymidil.auth.cognito.jwt_authorizer.jwt.decode"
     ) as mock_decode:
         now: datetime = datetime.now(tz=timezone.utc)
         token_payload: Dict[str, Any] = {

@@ -2,7 +2,7 @@ import pytest
 from typing import Optional, Any, List, Dict
 from pydantic import BaseModel, ValidationError
 
-from midil.jsonapi._mixins.validators import (
+from pymidil.jsonapi._mixins.validators import (
     ResourceValidatorMixin,
     ErrorSourceValidatorMixin,
 )

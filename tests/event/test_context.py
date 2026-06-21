@@ -2,7 +2,7 @@ import pytest
 import contextvars
 from unittest.mock import patch
 
-from midil.event.context import (
+from pymidil.event.context import (
     EventContext,
     get_current_event,
     event_context,
@@ -236,7 +236,7 @@ class TestEventContextManager:
         context_ids = [result[1] for result in results]
         assert len(set(context_ids)) == 5
 
-    @patch("midil.event.context.uuid4")
+    @patch("pymidil.event.context.uuid4")
     async def test_event_context_uuid_generation(self, mock_uuid4) -> None:
         """Test that event_context uses uuid4 for ID generation."""
         mock_uuid = type("MockUUID", (), {"hex": "mocked-uuid-hex"})()

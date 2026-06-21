@@ -1,7 +1,7 @@
 # tests/test_jsonapi_models.py
 import pytest
 from pydantic import ValidationError, HttpUrl
-from midil.jsonapi.document import (
+from pymidil.jsonapi.document import (
     JSONAPIObject,
     ErrorSource,
     ErrorLinks,

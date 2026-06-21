@@ -2,7 +2,7 @@ import pytest
 from datetime import datetime, timezone, timedelta
 from dateutil import parser
 
-from midil.auth.interfaces.models import (
+from pymidil.auth.interfaces.types import (
     ExpirableTokenMixin,
     AuthNToken,
     AuthNHeaders,

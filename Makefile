@@ -6,7 +6,7 @@ define run_checks
 	echo "Running poetry check"; \
 	poetry check || exit_code=$$?;\
 	echo "Running mypy"; \
-	mypy midil --exclude '/\.venv/' || exit_code=$$?; \
+	mypy pymidil --exclude '/\.venv/' || exit_code=$$?; \
 	echo "Running ruff"; \
 	ruff check . || exit_code=$$?; \
 	echo "Running black"; \
@@ -23,7 +23,7 @@ endef
 define install_poetry
 	if ! command -v poetry &> /dev/null; then \
     	pip install --upgrade pip; \
-		pip install 'poetry>=1.0.0,<2.0.0'; \
+		pip install 'poetry>=2.0.0,<3.0.0'; \
 	else \
     	echo "Poetry is already installed."; \
 	fi
@@ -80,7 +80,7 @@ lint:
 
 lint/fix:
 	@$(ACTIVATE) && \
-	black .
+	black . && \
 	ruff check --fix .
 
 format: ## Format code

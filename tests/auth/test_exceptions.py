@@ -4,7 +4,7 @@ Tests for midil.auth.exceptions
 
 import pytest
 
-from midil.auth.exceptions import (
+from pymidil.auth.exceptions import (
     BaseAuthError,
     AuthenticationError,
     AuthorizationError,

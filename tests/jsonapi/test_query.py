@@ -1,7 +1,7 @@
 import pytest
 from pydantic import ValidationError
 
-from midil.jsonapi.query import (
+from pymidil.jsonapi.query import (
     PaginationParams,
     Sort,
     SortField,

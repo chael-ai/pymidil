@@ -452,7 +452,7 @@ files = [
     {file = "certifi-2025.8.3-py3-none-any.whl", hash = "sha256:f6c12493cfb1b06ba2ff328595af9350c65d6644968e5d3a2ffd78699af217a5"},
     {file = "certifi-2025.8.3.tar.gz", hash = "sha256:e564105f78ded564e3ae7c923924435e1daa7463faeab5bb932bc53ffae63407"},
 ]
-markers = {main = "extra == \"auth\" or extra == \"full\" or extra == \"cli\""}
+markers = {main = "extra == \"auth\" or extra == \"full\" or extra == \"cli\" or extra == \"stripe\""}
 
 [[package]]
 name = "cffi"
@@ -665,7 +665,7 @@ files = [
     {file = "charset_normalizer-3.4.3-py3-none-any.whl", hash = "sha256:ce571ab16d890d23b5c278547ba694193a45011ff86a9162a71307ed9f86759a"},
     {file = "charset_normalizer-3.4.3.tar.gz", hash = "sha256:6fce4b8500244f6fcb71465d4a4930d132ba9ab8e71a7859e6a5d59851068d14"},
 ]
-markers = {main = "extra == \"cli\" or extra == \"full\""}
+markers = {main = "extra == \"cli\" or extra == \"full\" or extra == \"stripe\""}
 
 [[package]]
 name = "click"
@@ -1203,7 +1203,7 @@ files = [
     {file = "idna-3.10-py3-none-any.whl", hash = "sha256:946d195a0d259cbba61165e88e65941f16e9b36ea6ddb97f00452bae8b1287d3"},
     {file = "idna-3.10.tar.gz", hash = "sha256:12f65c9b470abda6dc35cf8e63cc574b1c52b11df2c86030af0ac09b01b13ea9"},
 ]
-markers = {main = "extra == \"auth\" or extra == \"full\" or extra == \"web\" or extra == \"cli\" or extra == \"aws\""}
+markers = {main = "extra == \"auth\" or extra == \"full\" or extra == \"web\" or extra == \"cli\" or extra == \"stripe\" or extra == \"aws\""}
 
 [package.extras]
 all = ["flake8 (>=7.1.1)", "mypy (>=1.11.2)", "pytest (>=8.3.2)", "ruff (>=0.6.2)"]
@@ -2413,7 +2413,7 @@ files = [
     {file = "requests-2.32.5-py3-none-any.whl", hash = "sha256:2462f94637a34fd532264295e186976db0f5d453d1cdd31473c85a6a161affb6"},
     {file = "requests-2.32.5.tar.gz", hash = "sha256:dbba0bac56e100853db0ea71b82b4dfd5fe2bf6d3754a8893c3af500cec7d7cf"},
 ]
-markers = {main = "extra == \"cli\" or extra == \"full\""}
+markers = {main = "extra == \"cli\" or extra == \"full\" or extra == \"stripe\""}
 
 [package.dependencies]
 certifi = ">=2017.4.17"
@@ -2732,6 +2732,23 @@ anyio = ">=3.6.2,<5"
 full = ["httpx (>=0.27.0,<0.29.0)", "itsdangerous", "jinja2", "python-multipart (>=0.0.18)", "pyyaml"]
 
 [[package]]
+name = "stripe"
+version = "11.6.0"
+description = "Python bindings for the Stripe API"
+optional = true
+python-versions = ">=3.6"
+groups = ["main"]
+markers = "extra == \"stripe\" or extra == \"full\""
+files = [
+    {file = "stripe-11.6.0-py2.py3-none-any.whl", hash = "sha256:6e6cf09ebb6d5fc2d708401cb8868fd7bff987a6d09a0433caaa92c62f97dbc5"},
+    {file = "stripe-11.6.0.tar.gz", hash = "sha256:0ced7cce23a6cb1a393c86a1f7f9435c9d83ae7cbd556362868caf62cb44a92c"},
+]
+
+[package.dependencies]
+requests = {version = ">=2.20", markers = "python_version >= \"3.0\""}
+typing-extensions = {version = ">=4.5.0", markers = "python_version >= \"3.7\""}
+
+[[package]]
 name = "tenacity"
 version = "9.1.2"
 description = "Retry code until it succeeds"
@@ -2872,7 +2889,7 @@ files = [
     {file = "urllib3-2.5.0-py3-none-any.whl", hash = "sha256:e6b01673c0fa6a13e374b50871808eb3bf7046c4b125b216f6bf1cc604cff0dc"},
     {file = "urllib3-2.5.0.tar.gz", hash = "sha256:3fc47733c7e419d4bc3f6b3dc2b4f890bb743906a30d56ba4a5bfa4bbff92760"},
 ]
-markers = {main = "extra == \"cli\" or extra == \"full\" or extra == \"aws\""}
+markers = {main = "extra == \"cli\" or extra == \"full\" or extra == \"stripe\" or extra == \"aws\""}
 
 [package.extras]
 brotli = ["brotli (>=1.0.9)", "brotlicffi (>=0.8.0)"]
@@ -3152,13 +3169,14 @@ propcache = ">=0.2.1"
 [extras]
 auth = ["httpx", "pyjwt", "python-dateutil"]
 aws = ["aioboto3"]
-cli = ["click", "cookiecutter", "pyfiglet", "rich"]
-full = ["aioboto3", "click", "cookiecutter", "fastapi", "httpx", "pyfiglet", "pyjwt", "pymongo", "python-dateutil", "redis", "rich", "starlette", "uvicorn"]
+cli = ["click", "cookiecutter", "pyfiglet", "pyyaml", "rich"]
+full = ["aioboto3", "click", "cookiecutter", "fastapi", "httpx", "pyfiglet", "pyjwt", "pymongo", "python-dateutil", "pyyaml", "redis", "rich", "starlette", "stripe", "uvicorn"]
 mongodb = ["pymongo"]
 redis = ["redis"]
+stripe = ["stripe"]
 web = ["fastapi", "starlette", "uvicorn"]
 
 [metadata]
 lock-version = "2.1"
-python-versions = "^3.12"
-content-hash = "800b96654accdbff42c7d7a108d89a3fecd1edc315b6124790b997a58aa26da9"
+python-versions = ">=3.12,<4.0"
+content-hash = "548b7fc6309e59ceacc2c9a47afc1ab713d6adb7e189d94bcac8ad27a8a0ea0c"

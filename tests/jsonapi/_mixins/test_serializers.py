@@ -1,7 +1,7 @@
 from typing import Optional, Dict, Any, List
 from pydantic import BaseModel
 
-from midil.jsonapi._mixins.serializers import (
+from pymidil.jsonapi._mixins.serializers import (
     ResourceSerializerMixin,
     ErrorSerializerMixin,
     DocumentSerializerMixin,
