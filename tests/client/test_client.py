@@ -7,9 +7,6 @@ from pymidil.auth.interfaces.types import AuthNHeaders, AuthNToken
 from pymidil.auth.interfaces.authenticator import AuthNProvider
 
 
-pytestmark = pytest.mark.asyncio
-
-
 class MockAuthNProvider(AuthNProvider):
     """Mock AuthNProvider for testing."""
 
@@ -83,6 +80,7 @@ class TestHttpClient:
         # Base URL should be updated to match the HttpClient's base_url
         assert http_client.client.base_url == original_base_url
 
+    @pytest.mark.asyncio
     async def test_headers_property(self, http_client: HttpClient):
         """Test headers property returns auth headers."""
         headers = await http_client.get_headers()
@@ -93,6 +91,7 @@ class TestHttpClient:
         assert "Content-Type" in headers
         assert headers["Authorization"] == "Bearer test-token"
 
+    @pytest.mark.asyncio
     async def test_headers_property_with_custom_auth(
         self, http_client: HttpClient, base_url: str
     ):
@@ -112,6 +111,7 @@ class TestHttpClient:
         assert headers["Accept"] == "application/vnd.api+json"
         assert headers["X-Custom-Header"] == "custom-value"
 
+    @pytest.mark.asyncio
     async def test_send_request_success(self, http_client: HttpClient):
         """Test successful request sending."""
         # Mock response
@@ -140,6 +140,7 @@ class TestHttpClient:
             json={"test": "data"},
         )
 
+    @pytest.mark.asyncio
     async def test_send_request_get_method(self, http_client: HttpClient):
         """Test GET request."""
         mock_response = Mock()
@@ -163,6 +164,7 @@ class TestHttpClient:
             json={},
         )
 
+    @pytest.mark.asyncio
     async def test_send_request_with_different_methods(self, http_client: HttpClient):
         """Test request with different HTTP methods."""
         mock_response = Mock()
@@ -183,6 +185,7 @@ class TestHttpClient:
             assert last_call[1]["method"] == method
             assert last_call[1]["url"] == f"/test-{method.lower()}"
 
+    @pytest.mark.asyncio
     async def test_send_request_http_error(self, http_client: HttpClient):
         """Test request with HTTP error response."""
         mock_response = Mock()
@@ -197,6 +200,7 @@ class TestHttpClient:
         with pytest.raises(httpx.HTTPStatusError):
             await http_client.send_request(method="GET", url="/not-found", json={})
 
+    @pytest.mark.asyncio
     async def test_send_request_network_error(self, http_client: HttpClient):
         """Test request with network error."""
         http_client.client.request = AsyncMock(
@@ -206,6 +210,7 @@ class TestHttpClient:
         with pytest.raises(httpx.ConnectError):
             await http_client.send_request(method="GET", url="/test", json={})
 
+    @pytest.mark.asyncio
     async def test_send_request_json_decode_error(self, http_client: HttpClient):
         """Test request with JSON decode error."""
         mock_response = Mock()
@@ -217,6 +222,7 @@ class TestHttpClient:
         with pytest.raises(ValueError):
             await http_client.send_request(method="GET", url="/test", json={})
 
+    @pytest.mark.asyncio
     async def test_send_request_uses_fresh_headers(self, http_client: HttpClient):
         """Test that send_request gets fresh headers for each request."""
         mock_response = Mock()
@@ -232,6 +238,7 @@ class TestHttpClient:
         # Verify auth provider was called twice (once for each request)
         assert http_client.client.request.call_count == 2
 
+    @pytest.mark.asyncio
     async def test_send_paginated_request_not_implemented(
         self, http_client: HttpClient
     ):
@@ -257,6 +264,7 @@ class TestHttpClient:
             HttpClient, "get_headers"
         )  # Check class level to avoid coroutine creation
 
+    @pytest.mark.asyncio
     async def test_auth_provider_integration(
         self, http_client: HttpClient, base_url: str
     ):
@@ -284,6 +292,7 @@ class TestHttpClient:
         assert headers["Accept"] == "application/custom+json"
         assert headers["Content-Type"] == "application/custom+json"
 
+    @pytest.mark.asyncio
     async def test_concurrent_requests(self, http_client: HttpClient):
         """Test handling concurrent requests."""
         import anyio
@@ -323,6 +332,7 @@ class TestHttpClient:
         client2 = HttpClient(auth_client=mock_auth_provider, base_url=url_obj)
         assert client2.base_url == url_obj
 
+    @pytest.mark.asyncio
     async def test_empty_response_handling(self, http_client: HttpClient):
         """Test handling of empty responses."""
         mock_response = Mock()
@@ -335,6 +345,7 @@ class TestHttpClient:
 
         assert result == {}
 
+    @pytest.mark.asyncio
     async def test_complex_data_structures(self, http_client: HttpClient):
         """Test sending complex data structures."""
         mock_response = Mock()

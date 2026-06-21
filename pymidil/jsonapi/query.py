@@ -2,7 +2,7 @@ from enum import StrEnum
 from typing import List, Optional, Annotated
 from typing_extensions import Doc
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from dataclasses import dataclass
 
@@ -37,9 +37,7 @@ class PaginationParams(BaseModel):
         ),
     ] = Constants.DEFAULT_PAGE_SIZE
 
-    class Config:
-        frozen = True
-        populate_by_name = True  # Allows using aliases like page[number]
+    model_config = ConfigDict(frozen=True, populate_by_name=True)
 
 
 class SortDirection(StrEnum):
@@ -65,8 +63,7 @@ class SortField(BaseModel):
             direction=SortDirection.DESC if raw.startswith("-") else SortDirection.ASC,
         )
 
-    class Config:
-        frozen = True
+    model_config = ConfigDict(frozen=True)
 
 
 class Sort(BaseModel):
@@ -85,8 +82,7 @@ class Sort(BaseModel):
         ]
         return cls(fields=fields)
 
-    class Config:
-        frozen = True
+    model_config = ConfigDict(frozen=True)
 
 
 class Include(BaseModel):
@@ -107,8 +103,7 @@ class Include(BaseModel):
                 )
         return v
 
-    class Config:
-        frozen = True
+    model_config = ConfigDict(frozen=True)
 
 
 class QueryParams(BaseModel):
@@ -116,5 +111,4 @@ class QueryParams(BaseModel):
     sort: Optional[Sort] = None
     include: Optional[Include] = None
 
-    class Config:
-        frozen = True
+    model_config = ConfigDict(frozen=True)
