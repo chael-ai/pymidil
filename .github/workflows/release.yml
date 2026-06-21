@@ -34,7 +34,7 @@ jobs:
     runs-on: ubuntu-latest
     environment:
       name: testpypi
-      url: https://test.pypi.org/project/midil-kit/
+      url: https://test.pypi.org/project/pymidil/
     permissions:
       id-token: write
     steps:
@@ -55,7 +55,7 @@ jobs:
     runs-on: ubuntu-latest
     environment:
       name: pypi
-      url: https://pypi.org/project/midil-kit/
+      url: https://pypi.org/project/pymidil/
     permissions:
       id-token: write
     steps:
