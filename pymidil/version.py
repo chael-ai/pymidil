@@ -4,9 +4,12 @@ from pymidil.utils.project_meta import PyProject
 try:
     from importlib.metadata import version
 
-    __version__ = version("midil")
+    __version__ = version("pymidil")
 except Exception:
-    # Fallback to pyproject.toml version (development mode)
-    __version__ = PyProject().version
+    from pathlib import Path
+
+    __version__ = PyProject(
+        str(Path(__file__).parent.parent / "pyproject.toml")
+    ).version
 
 __service_version__ = PyProject().version

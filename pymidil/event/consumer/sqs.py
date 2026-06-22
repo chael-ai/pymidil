@@ -47,13 +47,13 @@ class SQSConsumerEventConfig(PullEventConsumerConfig):
     @property
     def region(self) -> str:
         arn_parser = ArnParser()
-        arn = arn_parser.parse(self.queue_url)
+        arn = arn_parser.parse_arn(self.queue_url)
         return arn["region"]
 
     @property
     def dlq_region(self) -> Optional[str]:
         arn_parser = ArnParser()
-        arn = arn_parser.parse(self.dlq_url)
+        arn = arn_parser.parse_arn(self.dlq_url)
         return arn["region"] if arn else None
 
 
@@ -64,7 +64,7 @@ class SQSConsumer(PullEventConsumer):
     ):
         super().__init__(config)
         self._config: SQSConsumerEventConfig = config
-        self.session = aioboto3.Session()
+        self._session: aioboto3.Session = aioboto3.Session()
         self.backoff = ExponentialBackoff(
             base_delay=self._config.backoff_base_delay,
             max_delay=self._config.backoff_max_delay,
@@ -79,9 +79,9 @@ class SQSConsumer(PullEventConsumer):
         """
         message = cast(ConsumerMessage, message)
         try:
-            async with self.session.client(
+            async with self._session.client(
                 "sqs", region_name=self._config.region
-            ) as sqs:
+            ) as sqs:  # type: ignore[attr-defined]
                 await sqs.delete_message(
                     QueueUrl=self._config.queue_url,
                     ReceiptHandle=message.ack_handle,
@@ -111,9 +111,9 @@ class SQSConsumer(PullEventConsumer):
         try:
             if requeue and self._config.dlq_url:
                 # move to dead letter queue
-                async with self.session.client(
+                async with self._session.client(
                     "sqs", region_name=self._config.dlq_region
-                ) as sqs:
+                ) as sqs:  # type: ignore
                     params = {
                         "QueueUrl": self._config.dlq_url,
                         "MessageBody": message.model_dump_json(),
@@ -134,9 +134,9 @@ class SQSConsumer(PullEventConsumer):
                     logger.debug(f"Sent message {message.id} to DLQ")
 
             else:
-                async with self.session.client(
+                async with self._session.client(
                     "sqs", region_name=self._config.region
-                ) as sqs:
+                ) as sqs:  # type: ignore
                     receive_count = int(
                         message.metadata.get("ApproximateReceiveCount", "1")
                     )
@@ -158,7 +158,7 @@ class SQSConsumer(PullEventConsumer):
         """
         Main loop for polling SQS and processing messages.
         """
-        async with self.session.client("sqs", region_name=self._config.region) as sqs:
+        async with self._session.client("sqs", region_name=self._config.region) as sqs:  # type: ignore[attr-defined]
             while self._running:
                 logger.debug(
                     f"Polling SQS for new messages from queue: {self._config.queue_url}"
