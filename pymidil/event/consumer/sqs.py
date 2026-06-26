@@ -132,6 +132,8 @@ class SQSConsumer(PullEventConsumer):
                     await sqs.send_message(**params)
                     await self.ack(message)  # Remove from source queue
                     logger.debug(f"Sent message {message.id} to DLQ")
+                    # Notify observers (e.g. telemetry) that the message was dead-lettered.
+                    await self._safe_notify_hooks("on_dead_letter", message)
 
             else:
                 async with self.session.client(

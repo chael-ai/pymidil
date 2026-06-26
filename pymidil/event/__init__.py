@@ -72,6 +72,17 @@ from pymidil.event.observability import (
     attach_telemetry,
 )
 
+# Idempotency (A3)
+from pymidil.event.idempotency import (
+    IdempotencyPolicy,
+    IdempotencyStore,
+    InMemoryIdempotencyStore,
+    RedisIdempotencyStore,
+)
+
+# Dead-letter operations (A4)
+from pymidil.event.dlq import DlqRedriver, SQSDlqRedriver
+
 __all__ = [
     # event bus
     "EventBus",
@@ -130,4 +141,12 @@ __all__ = [
     "TelemetrySink",
     "TelemetrySettings",
     "attach_telemetry",
+    # Idempotency (A3)
+    "IdempotencyStore",
+    "InMemoryIdempotencyStore",
+    "RedisIdempotencyStore",
+    "IdempotencyPolicy",
+    # Dead-letter operations (A4)
+    "DlqRedriver",
+    "SQSDlqRedriver",
 ]

@@ -13,6 +13,10 @@ class Message(AllowExtraFieldsModel):
         description="Unique identifier for the message or its position, You can rely on the message Id for idempotent",
     )
     body: MessageBody = Field(..., description="The actual message payload")
+    idempotency_key: Optional[str] = Field(
+        default=None,
+        description="Business key for deduplication; falls back to id when unset",
+    )
     timestamp: Optional[datetime] = Field(
         default_factory=utcnow, description="When the message was published or received"
     )

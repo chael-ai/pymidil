@@ -20,6 +20,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `ProducerTelemetrySink`, `NullTelemetrySink`). One-call wiring via
   `attach_telemetry(bus)` / `TelemetrySettings` (env prefix `MIDIL_TELEMETRY_`).
   Envelope matches the Midil Observatory ingestion contract.
+- Event/Idempotency (A3): consumer-level deduplication applied at the dispatch
+  boundary (`consumer.use_idempotency(IdempotencyPolicy(...))`), so it covers every
+  subscriber type and never cross-blocks sibling subscribers. A duplicate delivery
+  is acked and reported via the new `on_duplicate` dispatch hook (no message
+  mutation). `IdempotencyStore` interface with `InMemoryIdempotencyStore` and
+  `RedisIdempotencyStore` (atomic `SET NX EX`); the claim is released on
+  retry/failure so redeliveries can re-process. The dedup key is a typed
+  `Message.idempotency_key` (falling back to `Message.id`), not a metadata lookup.
+- Event/DLQ (A4): `on_dead_letter` dispatch-hook stage (emitted by the SQS consumer
+  when a message is moved to a DLQ) → `dlq` telemetry. `DlqRedriver` /
+  `SQSDlqRedriver` primitive re-drives dead-lettered messages back to the source
+  queue — the data-plane executor behind the Observatory's replay command.
 
 ## v0.1.0 (2026-06-21)
 

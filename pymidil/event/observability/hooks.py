@@ -45,3 +45,20 @@ class DispatchHook:
     ) -> None:
         """Called when the message is being requeued due to a RetryableEventError."""
         pass
+
+    async def on_dead_letter(
+        self,
+        message: MessageProtocol,
+        consumer_name: str,
+        error: Exception | None = None,
+    ) -> None:
+        """Called when a message is moved to a dead-letter queue."""
+        pass
+
+    async def on_duplicate(
+        self,
+        message: MessageProtocol,
+        consumer_name: str,
+    ) -> None:
+        """Called when a duplicate delivery is short-circuited by idempotency."""
+        pass

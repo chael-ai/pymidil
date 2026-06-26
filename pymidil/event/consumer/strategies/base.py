@@ -11,6 +11,7 @@ from pydantic import BaseModel, Field
 from dataclasses import dataclass
 
 from pymidil.event.exceptions import RetryableEventError
+from pymidil.event.idempotency.policy import IdempotencyPolicy
 from pymidil.event.message import Message
 from pymidil.event.observability.hooks import DispatchHook
 from pymidil.event.subscriber.base import EventSubscriber
@@ -67,11 +68,17 @@ class EventConsumer(ABC):
     Subclasses implement start(), stop(), ack(), and nack().
     """
 
-    def __init__(self, config: BaseConsumerConfig) -> None:
+    def __init__(
+        self,
+        config: BaseConsumerConfig,
+        *,
+        idempotency: Optional[IdempotencyPolicy] = None,
+    ) -> None:
         self._config = config
         self._subscribers: Set[EventSubscriber] = set()
         self._subscription_lock = Lock()
         self._dispatch_hooks: List[DispatchHook] = []
+        self._idempotency: Optional[IdempotencyPolicy] = idempotency
 
     @property
     def name(self) -> str:
@@ -83,6 +90,20 @@ class EventConsumer(ABC):
 
     def remove_hook(self, hook: DispatchHook) -> None:
         self._dispatch_hooks = [h for h in self._dispatch_hooks if h is not hook]
+
+    def use_idempotency(self, policy: IdempotencyPolicy) -> None:
+        """Enable consumer-level deduplication for every subscriber via ``policy``."""
+        self._idempotency = policy
+
+    def _idempotency_key(self, message: Message) -> Optional[str]:
+        """The dedup key for this message, or None when idempotency is disabled."""
+        if self._idempotency is None:
+            return None
+        return self._idempotency.key_fn(message)
+
+    async def _release_claim(self, key: str) -> None:
+        if self._idempotency is not None:
+            await self._idempotency.store.release(key)
 
     def subscribe(self, subscriber: EventSubscriber) -> None:
         with self._subscription_lock:
@@ -114,6 +135,8 @@ class EventConsumer(ABC):
 
         Lifecycle:
 
+            idempotency claim
+                  ▼
             on_receive
                   ▼
             subscribers
@@ -121,7 +144,25 @@ class EventConsumer(ABC):
          determine outcome
                   ▼
             hooks + ack/nack
+
+        Deduplication is applied here, at the dispatch boundary, so it covers
+        every subscriber regardless of type. A duplicate delivery is acked and
+        reported via the on_duplicate hook without running any subscriber; the
+        claim is released if processing does not succeed, so a redelivery can
+        be re-processed.
         """
+
+        key = self._idempotency_key(message)
+        if key is not None:
+            policy = self._idempotency
+            assert policy is not None  # key only resolves when a policy is configured
+            if not await policy.store.claim(key, policy.ttl_seconds):
+                logger.debug(
+                    f"{self.name} duplicate {message.id} (key={key}) short-circuited"
+                )
+                await self._safe_notify_hooks("on_duplicate", message)
+                await self.ack(message)
+                return
 
         start = time.monotonic()
 
@@ -149,12 +190,19 @@ class EventConsumer(ABC):
                 message,
             )
 
+            # Keep the claim only for a successful outcome; release on
+            # retry/failure so a redelivery is free to re-process.
+            if key is not None and not isinstance(outcome, SuccessOutcome):
+                await self._release_claim(key)
+
             await self._handle_outcome(
                 outcome,
                 message,
             )
 
         except Exception:
+            if key is not None:
+                await self._release_claim(key)
             logger.exception(
                 f"Dispatcher failed unexpectedly for " f"{self.name} event {message.id}"
             )

@@ -58,6 +58,9 @@ class TelemetryDispatchHook(DispatchHook):
             message, consumer_name, EventStatus.SUCCESS, processing_time_ms=duration_ms
         )
 
+    async def on_duplicate(self, message: MessageProtocol, consumer_name: str) -> None:
+        await self._emit(message, consumer_name, EventStatus.DUPLICATE)
+
     async def on_failure(
         self, message: MessageProtocol, consumer_name: str, error: Exception
     ) -> None:
@@ -79,6 +82,24 @@ class TelemetryDispatchHook(DispatchHook):
             message,
             consumer_name,
             EventStatus.RETRYING,
+            failure_reason=reason,
+            failure_class=klass,
+        )
+
+    async def on_dead_letter(
+        self,
+        message: MessageProtocol,
+        consumer_name: str,
+        error: Exception | None = None,
+    ) -> None:
+        if error is not None:
+            reason, klass = self._describe_error(error)
+        else:
+            reason, klass = "moved to dead-letter queue", "DeadLetter"
+        await self._emit(
+            message,
+            consumer_name,
+            EventStatus.DLQ,
             failure_reason=reason,
             failure_class=klass,
         )
@@ -143,7 +164,8 @@ class TelemetryDispatchHook(DispatchHook):
             trace_id=trace.trace_id if trace else None,
             span_id=trace.span_id if trace else None,
             parent_span_id=trace.parent_span_id if trace else None,
-            idempotency_key=coerce_header_value(metadata.get("idempotency_key"))
+            idempotency_key=getattr(message, "idempotency_key", None)
+            or coerce_header_value(metadata.get("idempotency_key"))
             or str(message.id),
             failure_reason=failure_reason,
             failure_class=failure_class,
