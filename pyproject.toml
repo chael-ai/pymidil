@@ -22,6 +22,9 @@ dependencies = [
     "loguru>=0.7.3,<1.0.0",
     "tenacity>=9.1.2,<10.0.0",
     "tomli>=2.2.1,<3.0.0",
+    # Trace propagation is integral to the event system (API only; the SDK +
+    # exporter are opt-in via the otel-sdk extra).
+    "opentelemetry-api>=1.20.0,<2.0.0",
 ]
 
 [project.optional-dependencies]
@@ -31,11 +34,16 @@ web     = ["fastapi>=0.116.1,<1.0.0", "starlette>=0.45.1,<1.0.0", "uvicorn>=0.29
 aws     = ["aioboto3>=15.0.0,<16.0.0"]
 redis   = ["redis[asyncio]>=5.2.1,<6.0.0"]
 mongodb = ["pymongo[srv]>=4.0.0,<5.0.0"]
+# Tracing: the library instruments against the API only; the SDK + exporter
+# (otel-sdk) are the application's concern.
+otel     = ["opentelemetry-api>=1.20.0,<2.0.0"]
+otel-sdk = ["opentelemetry-sdk>=1.20.0,<2.0.0", "opentelemetry-exporter-otlp>=1.20.0,<2.0.0"]
 full = [
     "httpx>=0.28.1,<1.0.0", "pyjwt[crypto]>=2.10.1,<3.0.0", "python-dateutil>=2.8.0,<3.0.0",
     "click>=8.1.7,<9.0.0", "pyfiglet>=1.0.4,<2.0.0", "cookiecutter>=2.5.1,<3.0.0", "rich>=14.1.0,<15.0.0", "pyyaml>=6.0.0,<7.0.0",
     "fastapi>=0.116.1,<1.0.0", "starlette>=0.45.1,<1.0.0", "uvicorn>=0.29.0,<1.0.0",
-    "aioboto3>=15.0.0,<16.0.0", "redis[asyncio]>=5.2.1,<6.0.0", "pymongo[srv]>=4.0.0,<5.0.0"
+    "aioboto3>=15.0.0,<16.0.0", "redis[asyncio]>=5.2.1,<6.0.0", "pymongo[srv]>=4.0.0,<5.0.0",
+    "opentelemetry-api>=1.20.0,<2.0.0", "opentelemetry-sdk>=1.20.0,<2.0.0"
 ]
 
 [project.scripts]

@@ -8,15 +8,17 @@ from loguru import logger
 from pymidil.event.consumer.strategies.base import ConsumerMessage
 from pydantic import Field
 from botocore.exceptions import ClientError
-from typing import Dict, Any, Optional, Literal, cast
+from typing import Dict, Any, Mapping, Optional, Literal, cast
 import json
 from datetime import datetime
 from pymidil.utils.retry import AsyncRetry
 from pymidil.utils.backoff import ExponentialBackoff
 from pymidil.event.message import Message
-from botocore.utils import ArnParser
+from pymidil.event.producer.sqs import build_sqs_message_attributes, region_from_arn
 
 retry_policy = AsyncRetry(retry_on_exceptions=(ClientError,))
+
+_DEFAULT_REGION = "us-east-1"
 
 
 class SQSConsumerEventConfig(PullEventConsumerConfig):
@@ -43,45 +45,63 @@ class SQSConsumerEventConfig(PullEventConsumerConfig):
     backoff_max_delay: float = Field(
         default=300, description="Max delay for backoff in seconds", ge=0
     )
+    aws_region: Optional[str] = Field(
+        default=None, description="Explicit region; overrides any ARN-derived value"
+    )
+    endpoint_url: Optional[str] = Field(
+        default=None,
+        description="Custom SQS endpoint (e.g. LocalStack http://localhost:4566)",
+    )
 
     @property
     def region(self) -> str:
-        arn_parser = ArnParser()
-        arn = arn_parser.parse(self.queue_url)
-        return arn["region"]
+        return self.aws_region or region_from_arn(self.queue_url) or _DEFAULT_REGION
 
     @property
-    def dlq_region(self) -> Optional[str]:
-        arn_parser = ArnParser()
-        arn = arn_parser.parse(self.dlq_url)
-        return arn["region"] if arn else None
+    def dlq_region(self) -> str:
+        return self.aws_region or region_from_arn(self.dlq_url) or self.region
 
 
 class SQSConsumer(PullEventConsumer):
     def __init__(
         self,
         config: SQSConsumerEventConfig,
+        *,
+        session: Optional[Any] = None,
     ):
         super().__init__(config)
         self._config: SQSConsumerEventConfig = config
-        self.session = aioboto3.Session()
+        self.session = session or aioboto3.Session()
         self.backoff = ExponentialBackoff(
             base_delay=self._config.backoff_base_delay,
             max_delay=self._config.backoff_max_delay,
         )
 
-    async def ack(self, message: Message) -> None:
-        """
-        Acknowledge (delete) the message from the SQS queue.
+    def carrier(self, message: Message) -> Mapping[str, str]:
+        """Flatten SQS attributes (incl. message attributes) to a string carrier."""
+        flat: Dict[str, str] = {}
+        for key, value in (getattr(message, "metadata", {}) or {}).items():
+            if isinstance(value, Mapping):
+                string_value = (
+                    value.get("StringValue")
+                    or value.get("stringValue")
+                    or value.get("Value")
+                )
+                if string_value is not None:
+                    flat[str(key)] = str(string_value)
+            elif isinstance(value, (str, int, float, bool)):
+                flat[str(key)] = str(value)
+        return flat
 
-        Args:
-            message (EventContext): The SQS message dictionary, expected to contain 'ReceiptHandle'.
-        """
+    async def ack(self, message: Message) -> None:
+        """Acknowledge (delete) the message from the source queue."""
         message = cast(ConsumerMessage, message)
         try:
             async with self.session.client(
-                "sqs", region_name=self._config.region
-            ) as sqs:
+                "sqs",
+                region_name=self._config.region,
+                endpoint_url=self._config.endpoint_url,
+            ) as sqs:  # type: ignore[attr-defined]
                 await sqs.delete_message(
                     QueueUrl=self._config.queue_url,
                     ReceiptHandle=message.ack_handle,
@@ -90,75 +110,81 @@ class SQSConsumer(PullEventConsumer):
         except ClientError as e:
             logger.error(f"Error acknowledging message {message.id}: {e}")
 
-    async def nack(self, message: Message, requeue: bool = True) -> None:
-        """
-        Negative acknowledge the message.
+    async def retry(self, message: Message) -> None:
+        """Make the message available again by resetting visibility (with backoff)."""
+        message = cast(ConsumerMessage, message)
+        receive_count = int(message.metadata.get("ApproximateReceiveCount", "1"))
+        delay = self.backoff.next_delay(receive_count)
+        try:
+            async with self.session.client(
+                "sqs",
+                region_name=self._config.region,
+                endpoint_url=self._config.endpoint_url,
+            ) as sqs:  # type: ignore[attr-defined]
+                await sqs.change_message_visibility(
+                    QueueUrl=self._config.queue_url,
+                    ReceiptHandle=message.ack_handle,
+                    VisibilityTimeout=int(delay),
+                )
+                logger.debug(
+                    f"Requeued message {message.id} with backoff delay={delay}s "
+                    f"(attempt {receive_count})"
+                )
+        except ClientError as e:
+            logger.error(f"Error retrying message {message.id}: {e}")
 
-        Behavior:
-        - If `requeue` is True and a DLQ is configured, the message is explicitly
-            sent to the DLQ and then removed from the source queue to avoid duplicates.
-        - If `requeue` is False, the message visibility timeout is reset to 0,
-            making it immediately available again in the source queue.
-        - If no DLQ is configured but the source queue has an SQS redrive policy,
-            repeated nacks will eventually cause SQS to move the message to the DLQ
-            automatically once `maxReceiveCount` is exceeded.
+    async def dlq(self, message: Message, error: Optional[Exception] = None) -> None:
+        """Divert the message to the DLQ, then remove it from the source queue.
 
-        Args:
-            message (Message): The SQS message object (with ReceiptHandle, Body, etc.).
-            requeue (bool): Whether to send the message to the DLQ (if configured).
+        Falls back to redelivery when no DLQ is configured, rather than dropping.
         """
         message = cast(ConsumerMessage, message)
+        if not self._config.dlq_url:
+            await self.retry(message)
+            return
         try:
-            if requeue and self._config.dlq_url:
-                # move to dead letter queue
-                async with self.session.client(
-                    "sqs", region_name=self._config.dlq_region
-                ) as sqs:
-                    params = {
-                        "QueueUrl": self._config.dlq_url,
-                        "MessageBody": message.model_dump_json(),
-                    }
-                    if self._config.dlq_url.endswith(".fifo"):
-                        params.update(
-                            {
-                                "MessageGroupId": message.metadata.get(
-                                    "MessageGroupId", "default"
-                                ),
-                                "MessageDeduplicationId": message.metadata.get(
-                                    "MessageDeduplicationId", str(message.id)
-                                ),
-                            }
-                        )
-                    await sqs.send_message(**params)
-                    await self.ack(message)  # Remove from source queue
-                    logger.debug(f"Sent message {message.id} to DLQ")
-
-            else:
-                async with self.session.client(
-                    "sqs", region_name=self._config.region
-                ) as sqs:
-                    receive_count = int(
-                        message.metadata.get("ApproximateReceiveCount", "1")
+            async with self.session.client(
+                "sqs",
+                region_name=self._config.dlq_region,
+                endpoint_url=self._config.endpoint_url,
+            ) as sqs:  # type: ignore[attr-defined]
+                params: Dict[str, Any] = {
+                    "QueueUrl": self._config.dlq_url,
+                    "MessageBody": message.model_dump_json(),
+                }
+                # Preserve the trace carrier on the DLQ message so a later replay
+                # can link back to the original span.
+                attributes = build_sqs_message_attributes(dict(self.carrier(message)))
+                if attributes:
+                    params["MessageAttributes"] = attributes
+                if self._config.dlq_url.endswith(".fifo"):
+                    params.update(
+                        {
+                            "MessageGroupId": message.metadata.get(
+                                "MessageGroupId", "default"
+                            ),
+                            "MessageDeduplicationId": message.metadata.get(
+                                "MessageDeduplicationId", str(message.id)
+                            ),
+                        }
                     )
-                    delay = self.backoff.next_delay(receive_count)
-                    await sqs.change_message_visibility(
-                        QueueUrl=self._config.queue_url,
-                        ReceiptHandle=message.ack_handle,
-                        VisibilityTimeout=delay,
-                    )
-                    logger.debug(
-                        f"Requeued message {message.id} with backoff delay={delay}s (attempt {receive_count})"
-                    )
-
+                await sqs.send_message(**params)
+                logger.debug(f"Sent message {message.id} to DLQ")
         except ClientError as e:
-            logger.error(f"Error nacking message {message.id}: {e}")
+            logger.error(f"Error dead-lettering message {message.id}: {e}")
+            return
+        await self.ack(message)  # remove from source after diverting
 
     @retry_policy.retry
     async def _poll_loop(self) -> None:
         """
         Main loop for polling SQS and processing messages.
         """
-        async with self.session.client("sqs", region_name=self._config.region) as sqs:
+        async with self.session.client(
+            "sqs",
+            region_name=self._config.region,
+            endpoint_url=self._config.endpoint_url,
+        ) as sqs:  # type: ignore[attr-defined]
             while self._running:
                 logger.debug(
                     f"Polling SQS for new messages from queue: {self._config.queue_url}"
@@ -225,10 +251,10 @@ class SQSConsumer(PullEventConsumer):
         except Exception as e:
             if event:
                 logger.error(
-                    f"Nacking message {message.get('MessageId')} due to error: {e}"
+                    f"Dead-lettering message {message.get('MessageId')} due to error: {e}"
                 )
-                await self.nack(event, requeue=True)
+                await self.dlq(event, error=e)
             logger.warning(
-                f"Skipping nack message {message.get('MessageId')} because no event was found: {e}"
+                f"Skipping message {message.get('MessageId')} because no event was found: {e}"
             )
             raise e

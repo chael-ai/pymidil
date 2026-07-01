@@ -85,7 +85,12 @@ class EventSubscriber(ABC):
 
             await self.handle(event)
         except Exception as exc:
+            # on_error is a subscriber-local observation hook (logging/cleanup).
+            # Re-raise so the dispatch lifecycle can resolve the outcome
+            # (retry / dead-letter): the consumer's gather(return_exceptions=True)
+            # captures this exception to drive ack/retry/dlq + telemetry.
             await self.on_error(event, exc)
+            raise
         else:
             await self.on_success(event)
 
@@ -191,7 +196,15 @@ class FunctionSubscriber(EventSubscriber):
         Args:
             event: The event to process.
         """
-        next_handler = self.handler
+
+        # Normalize the leaf handler to an awaitable so both sync and async
+        # handlers (and middleware chains over either) work uniformly.
+        async def next_handler(e):
+            result = self.handler(e)
+            if asyncio.iscoroutine(result):
+                return await result
+            return result
+
         # Apply middlewares in reverse order (so the first is the outermost)
         for mw in reversed(self.middlewares):
 
