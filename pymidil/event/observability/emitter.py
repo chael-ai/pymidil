@@ -34,7 +34,16 @@ from pymidil.utils.time import utcnow
 
 def clean_metadata(metadata: Mapping[str, Any]) -> dict:
     """Flatten carrier headers to plain strings, dropping trace/routing noise."""
-    skip = {"traceparent", "x-correlation-id", "event_type", "replayed_from"}
+    # ``attempts`` is promoted to the envelope's top-level field (see
+    # ``_attempts``) — like the other routing keys it must not duplicate into
+    # the metadata payload.
+    skip = {
+        "traceparent",
+        "x-correlation-id",
+        "event_type",
+        "replayed_from",
+        "attempts",
+    }
     cleaned: dict[str, Any] = {}
     for key, value in metadata.items():
         if str(key).lower() in skip:

@@ -52,7 +52,9 @@ from pymidil.event.context import EventContext, get_current_event, event_context
 
 # Observability extension points + telemetry (A2)
 from pymidil.event.observability import (
+    ConsumerObserver,
     DispatchHook,
+    ProducerObserver,
     EventKind,
     EventStatus,
     MessageProtocol,
@@ -131,6 +133,8 @@ __all__ = [
     "EventStatus",
     "EventKind",
     "TelemetryDispatchHook",
+    "ConsumerObserver",
+    "ProducerObserver",
     "TelemetryProducerHook",
     "TelemetrySink",
     "TelemetrySettings",

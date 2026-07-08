@@ -15,6 +15,7 @@ from pymidil.utils.retry import AsyncRetry
 from pymidil.utils.backoff import ExponentialBackoff
 from pymidil.event.message import Message
 from pymidil.event.producer.sqs import build_sqs_message_attributes, region_from_arn
+from pymidil.event.control import ControlSource, ControlState
 
 retry_policy = AsyncRetry(retry_on_exceptions=(ClientError,))
 
@@ -68,8 +69,11 @@ class SQSConsumer(PullEventConsumer):
         config: SQSConsumerEventConfig,
         *,
         session: Optional[Any] = None,
+        control: Optional[ControlSource] = None,
     ):
-        super().__init__(config)
+        # Control enforcement (pause/throttle/drain) is inherited from
+        # PullEventConsumer — every pull transport gets it, not just SQS.
+        super().__init__(config, control=control)
         self._config: SQSConsumerEventConfig = config
         self.session = session or aioboto3.Session()
         self.backoff = ExponentialBackoff(
@@ -186,13 +190,24 @@ class SQSConsumer(PullEventConsumer):
             endpoint_url=self._config.endpoint_url,
         ) as sqs:  # type: ignore[attr-defined]
             while self._running:
+                # Honour the control plane before touching the queue (inherited
+                # gate: paused/draining naps and skips the cycle).
+                control = await self._control_gate()
+                if control is None:
+                    continue
+                throttled = control.state is ControlState.THROTTLED
+
                 logger.debug(
                     f"Polling SQS for new messages from queue: {self._config.queue_url}"
                 )
                 try:
                     response = await sqs.receive_message(
                         QueueUrl=self._config.queue_url,
-                        MaxNumberOfMessages=self._config.max_number_of_messages,
+                        # Throttled → pull one at a time so _throttle_pace below
+                        # bounds the rate to roughly throttle_per_sec.
+                        MaxNumberOfMessages=(
+                            1 if throttled else self._config.max_number_of_messages
+                        ),
                         VisibilityTimeout=self._config.visibility_timeout,
                         WaitTimeSeconds=self._config.wait_time_seconds,
                         AttributeNames=["All"],
@@ -206,6 +221,7 @@ class SQSConsumer(PullEventConsumer):
                         async with asyncio.TaskGroup() as tg:
                             for msg in messages:
                                 tg.create_task(self._process_message(msg))
+                        await self._throttle_pace(control)
                     else:
                         await asyncio.sleep(self._config.poll_interval)
                 except ClientError as e:

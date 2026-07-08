@@ -18,6 +18,14 @@ from pymidil.event.observability.hooks import (
     ProducerHook,
     PublishRecord,
 )
+from pymidil.event.observability.observer import (
+    ConsumerObserver,
+    Observation,
+    ObservedMessage,
+    ProducerObserver,
+    PublishObservation,
+    default_classification,
+)
 from pymidil.event.observability.protocols import MessageProtocol
 from pymidil.event.observability.sinks import (
     NullTelemetrySink,
@@ -38,6 +46,13 @@ __all__ = [
     # emitter (A2)
     "TelemetryDispatchHook",
     "TelemetryProducerHook",
+    # broker-agnostic observation (A5)
+    "ConsumerObserver",
+    "Observation",
+    "ObservedMessage",
+    "ProducerObserver",
+    "PublishObservation",
+    "default_classification",
     # sinks
     "TelemetrySink",
     "StdoutTelemetrySink",

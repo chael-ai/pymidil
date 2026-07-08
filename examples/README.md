@@ -11,6 +11,8 @@ Runnable examples demonstrating how to use `midil`.
 | [event/standalone_consumer.py](event/standalone_consumer.py) | Running a consumer independently without the event bus |
 | [event/standalone_producer.py](event/standalone_producer.py) | Publishing messages directly with a producer |
 | [event/webhook_producer.py](event/webhook_producer.py) | Producing events via webhook delivery |
+| [event/sqs_fanout/](event/sqs_fanout/) | **Fan-out demo**: OrderPaid → 4 branches on LocalStack SQS, feeding the Observatory (OOP `EventSubscriber`s) |
+| [event/kafka_observer.py](event/kafka_observer.py) | **Zero-refactor integration**: observe an existing aiokafka consumer with `ConsumerObserver` — telemetry, lineage and console control without adopting pymidil consumers |
 
 ## Running an example
 
