@@ -245,6 +245,40 @@ def test_control_source_wiring():
     assert "consumers/orders-worker/control" in wired.control._url
 
 
+def test_api_key_threads_to_sink_and_control():
+    # One key threads to BOTH data-plane surfaces: the telemetry sink and the
+    # control-poll source.
+    observe = ConsumerObserver(
+        observatory_url="http://obs:8080",
+        consumer="orders-worker",
+        broker="kafka",
+        api_key="mo_secret",
+    )
+    assert observe._sink._api_key == "mo_secret"
+    assert observe.control._headers == {"X-Api-Key": "mo_secret"}
+
+    publish = ProducerObserver(
+        observatory_url="http://obs:8080",
+        source_service="gateway",
+        broker="kafka",
+        api_key="mo_secret",
+    )
+    assert publish._sink._api_key == "mo_secret"
+
+
+def test_api_key_requires_observatory_url():
+    # A key only makes sense with the built-in HTTP sink; pairing it with a
+    # custom sink is a config error, not a silent no-op.
+    with pytest.raises(ValueError, match="api_key applies only"):
+        ConsumerObserver(
+            sink=CapturingSink(), consumer="c", broker="kafka", api_key="mo_x"
+        )
+    with pytest.raises(ValueError, match="api_key applies only"):
+        ProducerObserver(
+            sink=CapturingSink(), source_service="s", broker="kafka", api_key="mo_x"
+        )
+
+
 # ---- the produce-side twin -----------------------------------------------------
 
 

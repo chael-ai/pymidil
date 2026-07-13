@@ -60,3 +60,11 @@ async def test_http_source_fails_open_on_error():
     src = HttpControlSource("http://obs", "x", ttl=0.0)
     src._client = _FakeClient(raises=RuntimeError("connection refused"))
     assert (await src.get()).state is ControlState.RUNNING
+
+
+async def test_http_source_sends_api_key_header():
+    # The data-plane key rides in X-Api-Key; absent when unset (open/dev).
+    assert HttpControlSource("http://obs", "w", api_key="mo_secret")._headers == {
+        "X-Api-Key": "mo_secret"
+    }
+    assert HttpControlSource("http://obs", "w")._headers == {}

@@ -296,6 +296,7 @@ class ConsumerObserver:
         broker: str,
         observatory_url: Optional[str] = None,
         sink: Optional[TelemetrySink] = None,
+        api_key: Optional[str] = None,
         source_service: Optional[str] = None,
         classify: Optional[ExceptionClassifier] = None,
         include_payload: bool = True,
@@ -303,12 +304,17 @@ class ConsumerObserver:
     ) -> None:
         if (sink is None) == (observatory_url is None):
             raise ValueError("provide exactly one of observatory_url or sink")
+        if api_key is not None and observatory_url is None:
+            raise ValueError(
+                "api_key applies only with observatory_url — configure your "
+                "sink/control source directly instead"
+            )
         if sink is None:
             # Local import: the HTTP sink lazily requires httpx; keep this module
             # importable without the optional http dependency.
             from pymidil.event.observability.sinks.http import HttpTelemetrySink
 
-            sink = HttpTelemetrySink(observatory_url)  # type: ignore[arg-type]
+            sink = HttpTelemetrySink(observatory_url, api_key=api_key)  # type: ignore[arg-type]
         self._sink = sink
         self._consumer = consumer
         self._classify: ExceptionClassifier = classify or default_classification
@@ -324,7 +330,8 @@ class ConsumerObserver:
         if control is not None:
             self.control: ControlSource = control
         elif observatory_url is not None:
-            self.control = HttpControlSource(observatory_url, consumer)
+            # The control poll is a data-plane surface — same key as the sink.
+            self.control = HttpControlSource(observatory_url, consumer, api_key=api_key)
         else:
             self.control = NullControlSource()
 
@@ -525,14 +532,19 @@ class ProducerObserver:
         broker: str,
         observatory_url: Optional[str] = None,
         sink: Optional[TelemetrySink] = None,
+        api_key: Optional[str] = None,
         include_payload: bool = True,
     ) -> None:
         if (sink is None) == (observatory_url is None):
             raise ValueError("provide exactly one of observatory_url or sink")
+        if api_key is not None and observatory_url is None:
+            raise ValueError(
+                "api_key applies only with observatory_url — configure your sink directly"
+            )
         if sink is None:
             from pymidil.event.observability.sinks.http import HttpTelemetrySink
 
-            sink = HttpTelemetrySink(observatory_url)  # type: ignore[arg-type]
+            sink = HttpTelemetrySink(observatory_url, api_key=api_key)  # type: ignore[arg-type]
         self._sink = sink
         self._source_service = source_service
         self._hook = TelemetryProducerHook(

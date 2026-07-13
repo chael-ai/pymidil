@@ -58,12 +58,16 @@ class HttpControlSource:
         base_url: str,
         consumer: str,
         *,
+        api_key: Optional[str] = None,
         ttl: float = 5.0,
         timeout: float = 3.0,
     ) -> None:
         self._url = f"{base_url.rstrip('/')}/v1/consumers/{consumer}/control"
         self._ttl = ttl
         self._timeout = timeout
+        # Control polling is a data-plane surface — same Observatory API key the
+        # telemetry sink uses; unset only in open/dev deployments.
+        self._headers = {"X-Api-Key": api_key} if api_key else {}
         self._cached = Control(ControlState.RUNNING)
         self._fetched_at = 0.0
         self._client = None
@@ -76,7 +80,9 @@ class HttpControlSource:
             import httpx
 
             if self._client is None:
-                self._client = httpx.AsyncClient(timeout=self._timeout)
+                self._client = httpx.AsyncClient(
+                    timeout=self._timeout, headers=self._headers
+                )
             resp = await self._client.get(self._url)
             resp.raise_for_status()
             data = resp.json()["data"]
