@@ -51,18 +51,18 @@ def _consumer_config(
     )
 
 
+def _sink(s: Settings) -> HttpTelemetrySink:
+    return HttpTelemetrySink(s.observatory_url, api_key=s.observatory_api_key)
+
+
 def dispatch_telemetry(s: Settings, service: str) -> TelemetryDispatchHook:
     """The consumer-side telemetry leg — one row per dispatch outcome."""
-    return TelemetryDispatchHook(
-        HttpTelemetrySink(s.observatory_url), source_service=service, broker="sqs"
-    )
+    return TelemetryDispatchHook(_sink(s), source_service=service, broker="sqs")
 
 
 def producer_telemetry(s: Settings, service: str) -> TelemetryProducerHook:
     """The producer-side telemetry leg — the "emitted" step of the trace."""
-    return TelemetryProducerHook(
-        HttpTelemetrySink(s.observatory_url), source_service=service, broker="sqs"
-    )
+    return TelemetryProducerHook(_sink(s), source_service=service, broker="sqs")
 
 
 def _idempotency() -> IdempotencyPolicy:

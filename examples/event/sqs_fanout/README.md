@@ -55,7 +55,8 @@ python -m examples.event.sqs_fanout
 Then open the Observatory's **Event Trace Graph** and pick a recent trace — you'll
 see the one-into-four branch, mostly green with the occasional red loyalty leg.
 
-Tunable via env: `AWS_ENDPOINT_URL`, `OBSERVATORY_URL`, `DEMO_RATE` (orders/sec).
+Tunable via env: `AWS_ENDPOINT_URL`, `OBSERVATORY_URL`, `OBSERVATORY_API_KEY`
+(required when the Observatory enforces machine auth), `DEMO_RATE` (orders/sec).
 
 ## Tests
 

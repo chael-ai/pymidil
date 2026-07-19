@@ -53,6 +53,9 @@ class Settings:
     endpoint_url: str = os.getenv("AWS_ENDPOINT_URL", "http://127.0.0.1:4566")
     region: str = os.getenv("AWS_DEFAULT_REGION", "us-east-1")
     observatory_url: str = os.getenv("OBSERVATORY_URL", "http://127.0.0.1:8080")
+    # Required when the Observatory enforces machine auth; None only works
+    # against an open-mode (dev) backend.
+    observatory_api_key: str | None = os.getenv("OBSERVATORY_API_KEY")
     orders_per_sec: float = float(os.getenv("DEMO_RATE", "1.5"))
 
 
