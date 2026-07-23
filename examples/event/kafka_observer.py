@@ -101,10 +101,11 @@ async def consume(stop: asyncio.Event) -> None:
         consumer="orders-worker",
         broker="kafka",
         classify=classify,
+        api_key=os.getenv("OBSERVATORY_API_KEY"),
     )
     # Manual commits: at-least-once. With auto-commit a failed record's offset
     # would be committed behind our back and the "retry" would never happen.
-    consumer = AIOKafkaConsumer(
+    consumer: AIOKafkaConsumer = AIOKafkaConsumer(
         TOPIC,
         bootstrap_servers=KAFKA,
         group_id="orders-worker",
