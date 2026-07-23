@@ -180,3 +180,8 @@ Desktop.ini
 
 # Towncrier news fragments
 changelog/
+
+# Docusaurus site under docs/ (its own npm project)
+docs/node_modules/
+docs/build/
+docs/.docusaurus/

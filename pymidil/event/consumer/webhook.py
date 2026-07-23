@@ -5,7 +5,7 @@ from pymidil.event.consumer.strategies.push import (
     PushEventConsumer,
     PushEventConsumerConfig,
 )
-from typing import Literal, Dict, Any
+from typing import Literal, Dict, Any, Mapping
 import hashlib
 import json
 from pydantic import Field
@@ -46,6 +46,11 @@ class WebhookConsumer(PushEventConsumer):
     def entrypoint(self) -> APIRouter:
         return self._router
 
+    def carrier(self, message: Message) -> Mapping[str, str]:
+        """HTTP request headers carry the trace context (W3C traceparent)."""
+        headers = getattr(message, "headers", {}) or {}
+        return {str(k): str(v) for k, v in headers.items()}
+
     async def _handler(
         self,
         request: Request,
@@ -75,11 +80,5 @@ class WebhookConsumer(PushEventConsumer):
         self._subscribers.clear()
         logger.info("Webhook consumer stopped")
 
-    # push mode → ack/nack can be no-ops
-    async def ack(self, message: Message) -> None:
-        logger.debug("Acked event", message=message.model_dump_json())
-
-    async def nack(self, message: Message, requeue: bool = True) -> None:
-        logger.warning(
-            f"Nacked event, requeue={requeue}", message=message.model_dump_json()
-        )
+    # Push transport: ack/retry/dlq inherit Acknowledger's no-op defaults — the
+    # HTTP response is the acknowledgement.

@@ -1,8 +1,13 @@
-# MIDIL — Managed Interface for Data, Integration & Logic
+# pymidil
 
-**Backend infrastructure, as a Python SDK.**
+**The Python SDK for [Midil Observatory](https://midil.io) — every event, accounted for.**
 
-MIDIL gives distributed backend systems a shared foundation — auth, eventing, HTTP, and API conventions — so teams spend less time rebuilding the same plumbing across every service.
+Midil is an observability control plane for event-driven systems: it traces each
+message from producer to consumer, keeps the dead-letter ledger, and gives your
+team the levers — pause, throttle, drain — in one console. `pymidil` is how your
+services plug into it: instrument the consumers you already run, or build on the
+SDK's event runtime and get telemetry, idempotency, and retry/DLQ semantics
+built in.
 
 [![PyPI](https://img.shields.io/pypi/v/pymidil)](https://pypi.org/project/pymidil/)
 [![Python](https://img.shields.io/pypi/pyversions/pymidil)](https://pypi.org/project/pymidil/)
@@ -10,56 +15,34 @@ MIDIL gives distributed backend systems a shared foundation — auth, eventing, 
 
 ---
 
-## Architecture
-
-MIDIL is a collection of loosely coupled modules. Each can be used independently or composed:
+## How it fits together
 
 ```mermaid
-graph TB
-    subgraph Auth
-        Cognito[Cognito Provider]
-        JWT[JWT Authorizer]
-        Interfaces[Pluggable Interfaces]
+graph LR
+    subgraph Your services
+        P["Producer<br/>(TelemetryProducerHook)"]
+        C1["pymidil consumer<br/>(SQSConsumer + subscriber)"]
+        C2["Existing consumer<br/>(ConsumerObserver — any broker)"]
     end
 
-    subgraph Events["Event System"]
-        Bus[Event Bus]
-        Producers["Producers — SQS · Redis"]
-        Consumers["Consumers — SQS · Webhook · WebSocket"]
-        Scheduler["Scheduler — AWS EventBridge"]
+    B[(Broker<br/>SQS · Kafka · …)]
+
+    subgraph Midil Observatory
+        API["Observatory API<br/>(X-Api-Key)"]
+        Console["Console — traces · DLQ ledger ·<br/>incidents · idempotency · consumer control"]
     end
 
-    subgraph Web
-        API[MidilAPI]
-        Middleware[Auth Middleware]
-        Pagination["Pagination — Cursor · Offset"]
-        JSONAPI[JSON:API Serializer]
-    end
-
-    subgraph Client
-        HTTP[HTTP Client]
-        Retry[Retry & Backoff]
-    end
-
-    subgraph Core
-        Logger[Structured Logger]
-        Settings[Settings]
-    end
-
-    Auth -->|injects headers| Client
-    Auth -->|verifies tokens| Middleware
-    Bus --> Producers
-    Bus --> Consumers
-    Bus --> Scheduler
-    API --> Middleware
-    API --> Pagination
-    API --> JSONAPI
-    HTTP --> Retry
-    Core --> Auth
-    Core --> Events
-    Core --> Web
-    Core --> Client
+    P --> B --> C1 & C2
+    P & C1 & C2 -- telemetry --> API --> Console
+    Console -- "pause / throttle / drain" --> API -- control state --> C1 & C2
 ```
+
+Every observation lands in your organization's isolated tenant, routed by the
+API key. From the console you get the end-to-end trace graph (one `OrderPaid`
+fanning into four branches, the red leg obvious), the dead-letter ledger grouped
+by failure class, incident investigation, idempotency analysis — and live
+control over the consumers themselves. Replay of dead-lettered events is on the
+roadmap (the console marks it "soon"; nothing in the SDK pretends otherwise).
 
 ---
 
@@ -69,13 +52,13 @@ graph TB
 pip install pymidil
 ```
 
-MIDIL is modular. Install only what your service needs:
+Modular — install only what your service needs:
 
 | Extra | Installs | Use when you need |
 |---|---|---|
-| `pymidil[auth]` | httpx, pyjwt | Cognito auth, JWT verification, HTTP client |
+| `pymidil[auth]` | httpx, pyjwt | HTTP telemetry sink, Cognito auth, JWT verification |
 | `pymidil[web]` | fastapi, starlette, uvicorn | REST APIs, middleware, pagination |
-| `pymidil[aws]` | aioboto3 | SQS consumers, EventBridge scheduling |
+| `pymidil[aws]` | aioboto3 | SQS producers/consumers, EventBridge scheduling |
 | `pymidil[redis]` | redis | Redis-backed event streaming |
 | `pymidil[mongodb]` | pymongo | MongoDB cursor pagination |
 | `pymidil[cli]` | click, rich, cookiecutter | Project scaffolding and service launcher |
@@ -85,275 +68,123 @@ Requires Python 3.12+.
 
 ---
 
-## Quick start
+## Observe a consumer you already run
 
-Auth, HTTP, and eventing wired together in one example:
-
-```python
-import asyncio
-from pymidil.auth.cognito import CognitoClientCredentialsAuthenticator
-from pymidil.client import HttpClient
-from pymidil.event.event_bus import EventBus
-from pymidil.event.subscriber.base import EventSubscriber
-from pymidil.event.message import Message
-
-class OrderHandler(EventSubscriber):
-    async def handle(self, event: Message) -> None:
-        print(f"Processing: {event.body}")
-
-    async def on_error(self, event: Message, error: Exception) -> None:
-        print(f"Failed: {error}")
-
-async def main():
-    auth = CognitoClientCredentialsAuthenticator(
-        client_id="...",
-        client_secret="...",
-        cognito_domain="your-domain.auth.region.amazoncognito.com",
-    )
-
-    # Downstream call — auth headers injected automatically
-    client = HttpClient(auth_client=auth, base_url="https://api.example.com")
-    response = await client.send_request("POST", "/orders", data={"item": "widget"})
-
-    # Publish the result through the event bus
-    bus = EventBus()
-    bus.subscribe(OrderHandler())
-    await bus.publish(response.json())
-    await bus.start()
-
-asyncio.run(main())
-```
-
----
-
-## What's included
-
-### Auth
-
-Outbound machine-to-machine auth and inbound JWT verification, with a pluggable interface so you're not locked into any one provider.
-
-```mermaid
-sequenceDiagram
-    participant S as Your Service
-    participant C as AWS Cognito
-    participant D as Downstream API
-    participant R as Incoming Request
-
-    Note over S,D: Outbound — service-to-service
-    S->>C: POST /token (client_id + secret)
-    C-->>S: access_token (JWT)
-    S->>D: Request + Bearer token
-    D-->>S: 200 OK
-
-    Note over R,S: Inbound — verify caller tokens
-    R->>S: Request + Bearer token
-    S->>C: Fetch JWKS (cached)
-    C-->>S: Public keys
-    S-->>R: 200 OK (verified claims attached to request)
-```
+Zero refactor: keep your broker client, your loop, your handler. Wrap each
+delivery in an observation and Midil gets the outcome, the timing, and the
+trace lineage — and you get console control back.
 
 ```python
-from pymidil.auth.cognito import CognitoClientCredentialsAuthenticator, CognitoJWTAuthorizer
+from pymidil.event.observability import ConsumerObserver
 
-# Outbound — get a token for service-to-service calls
-auth = CognitoClientCredentialsAuthenticator(
-    client_id="...",
-    client_secret="...",
-    cognito_domain="your-domain.auth.region.amazoncognito.com",
-)
-headers = await auth.get_headers()  # {"Authorization": "Bearer ..."}
-
-# Inbound — verify tokens from incoming requests
-authorizer = CognitoJWTAuthorizer(user_pool_id="...", region="us-east-1")
-claims = await authorizer.verify(token)
-```
-
----
-
-### Event system
-
-A transport-agnostic event bus. Swap between SQS, Redis, or webhooks through config — your handler code stays the same.
-
-```mermaid
-graph LR
-    subgraph Transports
-        SQS_P[SQS]
-        Redis_P[Redis]
-    end
-
-    subgraph Consumers
-        SQS_C[SQS polling]
-        WH_C[Webhook]
-        WS_C[WebSocket]
-    end
-
-    subgraph YourCode["Your code"]
-        Sub["EventSubscriber\n.handle()"]
-    end
-
-    SQS_P & Redis_P -->|produce| Bus[Event Bus]
-    Bus -->|route| SQS_C & WH_C & WS_C
-    SQS_C & WH_C & WS_C -->|deliver| Sub
-    Sub -->|publish| Bus
-```
-
-```python
-from pymidil.event.event_bus import EventBus
-from pymidil.event.subscriber.base import EventSubscriber
-from pymidil.event.message import Message
-
-class OrderPlacedHandler(EventSubscriber):
-    async def handle(self, event: Message) -> None:
-        ...
-
-    async def on_error(self, event: Message, error: Exception) -> None:
-        ...
-
-bus = EventBus()
-bus.subscribe(OrderPlacedHandler())
-
-await bus.publish({"order_id": "abc-123"})
-await bus.start()
-```
-
-Transport is configured through your service settings — no code change needed to switch from Redis to SQS in production.
-
----
-
-### Scheduler
-
-Emit one-off or future-targeted events using AWS EventBridge. No cron infrastructure to manage.
-
-```python
-from pymidil.event.scheduler.eventbridge import AWSEventBridgeScheduler
-from datetime import datetime
-
-scheduler = AWSEventBridgeScheduler(region="us-east-1")
-
-# Emit an event immediately to an EventBridge bus
-await scheduler.put_event(
-    detail_type="order.placed",
-    source="orders-service",
-    detail={"order_id": "abc-123"},
-    event_bus_name="default",
+observe = ConsumerObserver(
+    observatory_url="https://api.midil.io",
+    api_key="mo_…",              # issued in the console (org settings → API keys)
+    consumer="orders-worker",     # the name the Observatory shows — and controls
+    broker="kafka",               # a label; any broker works
 )
 
-# Schedule a one-off event at a specific time
-await scheduler.schedule_event(
-    schedule_name="send-invoice-abc-123",
-    endpoint="arn:aws:lambda:...",
-    execution_time=datetime(2025, 6, 1, 9, 0),
-    data={"invoice_id": "abc-123"},
-    role_arn="arn:aws:iam::...",
+async for record in kafka_consumer:                    # your existing loop
+    if not (await observe.control.get()).state.should_pull:
+        continue                                       # paused from the console
+    async with observe(record.key, "OrderPlaced", headers=record.headers):
+        await handle_order(record)                     # your code, untouched
+```
+
+Per delivery, those lines buy: a telemetry envelope (success / retrying /
+failed / dlq) identical to what a pymidil-managed consumer emits, wall-clock
+processing time, W3C trace continuity from the message headers — the lineage
+graph's cross-service edges — and pause/throttle/drain honored straight from
+the console. `ProducerObserver` is the emit-side counterpart.
+
+---
+
+## Or build on the event runtime
+
+Subscribers are classes with a lifecycle, not callbacks. Retry-vs-dead-letter
+is decided by the exception you raise, idempotency is a policy you attach, and
+telemetry is a hook — each concern snaps on independently.
+
+```python
+from pymidil.event import (
+    EventSubscriber, SQSConsumer, SQSConsumerEventConfig, TelemetryDispatchHook,
 )
+from pymidil.event.exceptions import RetryableEventError
+from pymidil.event.idempotency import IdempotencyPolicy, InMemoryIdempotencyStore
+from pymidil.event.observability.sinks.http import HttpTelemetrySink
+
+class OrderSubscriber(EventSubscriber):
+    async def handle(self, event) -> None:
+        if upstream_busy():
+            raise RetryableEventError("throttled")   # → redelivered with backoff
+        await process(event)                          # any other error → DLQ
+
+consumer = SQSConsumer(SQSConsumerEventConfig(type="sqs", queue_url=..., dlq_url=...))
+consumer.add_hook(TelemetryDispatchHook(
+    HttpTelemetrySink("https://api.midil.io", api_key="mo_…"),
+    source_service="orders-svc",
+    broker="sqs",
+))
+consumer.use_idempotency(IdempotencyPolicy(InMemoryIdempotencyStore(), key_fn=...))
+consumer.subscribe(OrderSubscriber())
 ```
+
+The [`sqs_fanout` example](examples/event/sqs_fanout/) is the full tour: one
+`OrderPaid` fanning out into four services on LocalStack SQS, a deliberately
+flaky branch dead-lettering ~30% of the time, and the whole shape visible in
+the Observatory's trace graph.
 
 ---
 
-### HTTP client
+## Authentication
 
-An HTTPX-based client with built-in retry, exponential backoff, and first-class auth integration.
-
-```python
-from pymidil.client import HttpClient
-
-client = HttpClient(auth_client=auth, base_url="https://api.example.com")
-response = await client.send_request("POST", "/orders", data={...})
-```
-
-Retry and backoff are configurable via your service settings — no subclassing needed.
+Services authenticate to the Observatory with an **API key** (`mo_…`), created
+by an organization admin in the console and passed as `api_key=` (sent as
+`X-Api-Key`). The key selects your organization — telemetry can only land in
+your own tenant — and is scoped to exactly two capabilities: writing telemetry
+and reading control state. A leaked key can never touch the console or
+management surfaces.
 
 ---
 
-### FastAPI extensions
+## The supporting toolkit
 
-Drop-in middleware and dependencies for auth and JSON:API-compliant responses.
+The SDK also ships the service plumbing the event runtime grew out of — usable
+on their own:
 
-```python
-from fastapi import FastAPI, Depends, Request
-from pymidil.web import MidilAPI
-from pymidil.web.middleware.auth import CognitoAuthMiddleware, AuthContext
-from pymidil.web.dependencies.jsonapi import parse_sort, parse_include
-
-app = MidilAPI()  # FastAPI subclass with JSON:API exception handlers pre-wired
-app.add_middleware(CognitoAuthMiddleware)
-
-def get_auth(request: Request) -> AuthContext:
-    return request.state.auth
-
-@app.get("/orders")
-async def list_orders(
-    auth: AuthContext = Depends(get_auth),
-    sort=Depends(parse_sort),
-    include=Depends(parse_include),
-):
-    ...
-```
-
----
-
-### JSON:API
-
-[JSON:API](https://jsonapi.org/) is a specification for structuring API responses — consistent shape, sparse fieldsets, relationship includes, and pagination links across every endpoint. MIDIL implements the spec so you don't have to hand-roll response envelopes:
-
-```python
-from pymidil.jsonapi import Document, ResourceObject
-
-doc = Document(
-    data=ResourceObject(
-        id="1",
-        type="orders",
-        attributes={"status": "placed", "total": 99.00},
-    )
-)
-```
-
----
-
-### Logger
-
-Structured, leveled logging with automatic sensitive-data masking.
-
-```python
-from pymidil.logger import setup_logger
-
-log = setup_logger(level="INFO", enable_http_logging=False)
-log.info("Order placed", order_id="abc-123", total=99.00)
-# {"level": "INFO", "message": "Order placed", "order_id": "abc-123", "total": 99.00, ...}
-```
-
----
-
-## CLI
-
-Scaffold and run services from the terminal.
-
-```bash
-midil init        # create a new service from a template (FastAPI or Lambda)
-midil launch      # start the service with uvicorn
-midil version     # show the installed SDK version
-```
+| Module | What it gives you |
+|---|---|
+| `pymidil.auth` | Cognito client-credentials auth (outbound) and JWT verification (inbound), behind pluggable interfaces |
+| `pymidil.client` | HTTPX-based client with retry, backoff, and auth-header injection |
+| `pymidil.web` | `MidilAPI` (FastAPI subclass), auth middleware, cursor/offset pagination, [JSON:API](https://jsonapi.org/) serialization |
+| `pymidil.event.scheduler` | One-off and future-dated events via AWS EventBridge |
+| `pymidil.logger` | Structured logging with sensitive-data masking |
+| `midil` CLI | `midil init` (scaffold a service), `midil launch`, `midil version` |
 
 ---
 
 ## Examples
 
-Runnable examples are in [`examples/`](examples/). See the [examples README](examples/README.md) for a full list.
+Runnable examples live in [`examples/`](examples/) — see the
+[examples README](examples/README.md). Start with:
+
+- [`event/sqs_fanout/`](examples/event/sqs_fanout/) — the end-to-end tour:
+  fan-out topology, retries, DLQ, idempotency, telemetry, console control.
+- [`event/kafka_observer.py`](examples/event/kafka_observer.py) — zero-refactor
+  observation of an existing aiokafka consumer.
 
 ---
 
 ## Design principles
 
 - **Async-first.** Every component is built for `asyncio` — no sync wrappers.
+- **Observation is data, control is explicit.** Telemetry describes what
+  happened; your consumer only changes behavior where you poll control state.
+- **One semantic core.** An observed consumer and a pymidil-managed one emit
+  the same envelopes — the Observatory can't tell the difference, by design.
+- **Interface-driven.** Sinks, control sources, subscribers, auth providers,
+  retry strategies — all swappable abstract bases.
 - **Opt-in by default.** Nothing is installed you didn't ask for.
-- **Interface-driven.** Auth providers, event subscribers, retry strategies — all are abstract base classes you can swap or extend.
-- **Convention over configuration.** Sane defaults, with escape hatches where it matters.
-
----
-
-## Contributing
-
-Open an issue or pull request on [GitHub](https://github.com/midil-io/pymidil). All contributions welcome.
 
 ---
 

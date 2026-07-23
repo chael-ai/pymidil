@@ -50,8 +50,37 @@ from pymidil.event.exceptions import (
 # Context
 from pymidil.event.context import EventContext, get_current_event, event_context
 
-# Observability extension points
-from pymidil.event.observability import DispatchHook, MessageProtocol
+# Observability extension points + telemetry (A2)
+from pymidil.event.observability import (
+    ConsumerObserver,
+    DispatchHook,
+    ProducerObserver,
+    EventKind,
+    EventStatus,
+    MessageProtocol,
+    ProducerHook,
+    PublishRecord,
+    TelemetryDispatchHook,
+    TelemetryEnvelope,
+    TelemetryProducerHook,
+    TelemetrySettings,
+    TelemetrySink,
+    attach_telemetry,
+)
+
+# Idempotency (A3)
+from pymidil.event.idempotency import (
+    IdempotencyPolicy,
+    IdempotencyStore,
+    InMemoryIdempotencyStore,
+    RedisIdempotencyStore,
+)
+
+# Dead-letter operations (A4)
+from pymidil.event.dlq import DlqRedriver, SQSDlqRedriver
+
+# Acknowledgement (transport-agnostic dispositions: ack / retry / dlq)
+from pymidil.event.acknowledgement import Acknowledger
 
 __all__ = [
     # event bus
@@ -95,7 +124,29 @@ __all__ = [
     "ConsumerCrashError",
     "ConsumerError",
     "ProducerError",
-    # Observability extension points
+    # Observability extension points + telemetry (A2)
     "DispatchHook",
+    "ProducerHook",
+    "PublishRecord",
     "MessageProtocol",
+    "TelemetryEnvelope",
+    "EventStatus",
+    "EventKind",
+    "TelemetryDispatchHook",
+    "ConsumerObserver",
+    "ProducerObserver",
+    "TelemetryProducerHook",
+    "TelemetrySink",
+    "TelemetrySettings",
+    "attach_telemetry",
+    # Idempotency (A3)
+    "IdempotencyStore",
+    "InMemoryIdempotencyStore",
+    "RedisIdempotencyStore",
+    "IdempotencyPolicy",
+    # Dead-letter operations (A4)
+    "DlqRedriver",
+    "SQSDlqRedriver",
+    # Acknowledgement
+    "Acknowledger",
 ]
