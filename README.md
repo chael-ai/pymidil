@@ -78,7 +78,7 @@ trace lineage — and you get console control back.
 from pymidil.event.observability import ConsumerObserver
 
 observe = ConsumerObserver(
-    observatory_url="https://api.your-deployment.io",
+    observatory_url="https://api.midil.io",
     api_key="mo_…",              # issued in the console (org settings → API keys)
     consumer="orders-worker",     # the name the Observatory shows — and controls
     broker="kafka",               # a label; any broker works
@@ -121,7 +121,7 @@ class OrderSubscriber(EventSubscriber):
 
 consumer = SQSConsumer(SQSConsumerEventConfig(type="sqs", queue_url=..., dlq_url=...))
 consumer.add_hook(TelemetryDispatchHook(
-    HttpTelemetrySink("https://api.your-deployment.io", api_key="mo_…"),
+    HttpTelemetrySink("https://api.midil.io", api_key="mo_…"),
     source_service="orders-svc",
     broker="sqs",
 ))
