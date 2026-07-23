@@ -27,9 +27,12 @@ class PyProject:
         try:
             with open(self.path, "rb") as toml_file:
                 pyproject_data = tomli.load(toml_file)
-                self._data = pyproject_data.get("tool", {}).get(
-                    "poetry", {}
-                ) or pyproject_data.get("project", {})
+                # PEP 621 [project] is the authoritative metadata; [tool.poetry]
+                # remains only as packaging config (packages/groups) and must
+                # never shadow it — it is truthy while carrying no version.
+                self._data = pyproject_data.get("project") or pyproject_data.get(
+                    "tool", {}
+                ).get("poetry", {})
         except FileNotFoundError:
             self._data = None
 
