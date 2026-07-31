@@ -1,3 +1,3 @@
-from .auth import CognitoAuthMiddleware
+from .auth import JWKAuthMiddleware
 
-__all__ = ["CognitoAuthMiddleware"]
+__all__ = ["JWKAuthMiddleware"]

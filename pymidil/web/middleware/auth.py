@@ -3,7 +3,7 @@ from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request
 from pymidil.auth.interfaces.authorizer import AuthZProvider
 from pymidil.auth.interfaces.types import AuthZTokenClaims
-from pymidil.auth.cognito.jwt_authorizer import CognitoJWTAuthorizer
+from pymidil.auth.providers.authorization.jwk import JWKAuthorizer
 from starlette.exceptions import HTTPException
 from starlette.responses import Response
 from pymidil.auth.exceptions import AuthorizationError
@@ -53,7 +53,7 @@ class BaseAuthMiddleware(BaseHTTPMiddleware):
     authentication context in the request state.
 
     Subclass this middleware and implement the `authorizer` method to provide a concrete
-    AuthZProvider (e.g., CognitoJWTAuthorizer).
+    AuthZProvider (e.g., JWKAuthorizer).
 
     Example:
 
@@ -150,18 +150,18 @@ class BaseAuthMiddleware(BaseHTTPMiddleware):
         return token
 
 
-class CognitoAuthMiddleware(BaseAuthMiddleware):
+class JWKAuthMiddleware(BaseAuthMiddleware):
     """
-    Middleware to extract cognitoauth headers from request and store them in the request state.
+    Middleware that verifies bearer tokens against a JWKS endpoint and stores the
+    decoded claims in the request state.
 
     Example:
     ```python
     from fastapi import FastAPI, Depends
-    from pymidil.auth.cognito.jwt_authorizer import CognitoJWTAuthorizer
     from pymidil.auth.interfaces.authorizer import AuthZProvider
     from pymidil.auth.interfaces.types import AuthZTokenClaims
     from pymidil.web.fastapi.middleware.auth_middleware import (
-        CognitoAuthMiddleware,
+        JWKAuthMiddleware,
     )
     app = FastAPI()
 
@@ -173,12 +173,15 @@ class CognitoAuthMiddleware(BaseAuthMiddleware):
             return auth.to_dict()
 
         # as middleware
-        app.add_middleware(CognitoAuthMiddleware)
+        app.add_middleware(JWKAuthMiddleware)
 
     """
 
     async def authorizer(self, request: Request) -> AuthZProvider:
-        cognito_settings = get_settings().get_auth("cognito")
-        return CognitoJWTAuthorizer(
-            user_pool_id=cognito_settings.user_pool_id, region=cognito_settings.region
+        jwk_settings = get_settings().get_auth("jwk")
+        return JWKAuthorizer(
+            issuer=jwk_settings.issuer,
+            jwks_url=jwk_settings.jwks_url,
+            audience=jwk_settings.audience,
+            algorithms=jwk_settings.algorithms,
         )

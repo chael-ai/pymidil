@@ -1,5 +1,5 @@
 from abc import ABC, abstractmethod
-from pymidil.auth.interfaces.types import AuthNToken, AuthNHeaders
+from pymidil.auth.interfaces.types import AuthNToken
 
 
 class AuthNProvider(ABC):
@@ -26,8 +26,8 @@ class AuthNProvider(ABC):
                 # Implementation to fetch and return an AccessToken
                 ...
 
-            async def get_auth_headers(self) -> AuthHeaders:
-                # Implementation to return AuthHeaders with the access token
+            async def invalidate(self) -> AuthHeaders:
+                # Invalidate credential
                 ...
 
     """
@@ -36,6 +36,6 @@ class AuthNProvider(ABC):
     async def get_token(self) -> AuthNToken:
         pass
 
-    @abstractmethod
-    async def get_headers(self) -> AuthNHeaders:
-        pass
+    async def invalidate(self) -> None:
+        """Called when the current token should no longer be trusted."""
+        raise NotImplementedError("Token invalidation not implemented for this client")

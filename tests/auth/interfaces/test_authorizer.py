@@ -10,6 +10,19 @@ from typing import Dict, Any
 pytestmark = pytest.mark.anyio
 
 
+def _base_claims_data(**overrides: Any) -> Dict[str, Any]:
+    defaults: Dict[str, Any] = {
+        "token": "test-token",
+        "sub": "test-user",
+        "iss": "https://idp.example.com/test",
+        "aud": "test-client-id",
+        "iat": int(datetime.now(timezone.utc).timestamp()),
+        "exp": int((datetime.now(timezone.utc) + timedelta(hours=1)).timestamp()),
+    }
+    defaults.update(overrides)
+    return defaults
+
+
 class ConcreteAuthZProvider(AuthZProvider):
     """Concrete implementation for testing."""
 
@@ -19,11 +32,7 @@ class ConcreteAuthZProvider(AuthZProvider):
         claims_data: Dict[str, Any] | None = None,
     ):
         self.should_fail = should_fail
-        self.claims_data = claims_data or {
-            "token": "test-token",
-            "sub": "test-user",
-            "exp": int((datetime.now(timezone.utc) + timedelta(hours=1)).timestamp()),
-        }
+        self.claims_data = claims_data or _base_claims_data()
 
     async def verify(self, token: str) -> AuthZTokenClaims:
         if self.should_fail:
@@ -40,7 +49,7 @@ class TestAuthZTokenClaims:
         exp_timestamp = int(
             (datetime.now(timezone.utc) + timedelta(hours=1)).timestamp()
         )
-        claims = AuthZTokenClaims(token="test-token", sub="user-123", exp=exp_timestamp)
+        claims = AuthZTokenClaims(**_base_claims_data(exp=exp_timestamp))
 
         # Should have all properties from ExpirableTokenMixin
         assert hasattr(claims, "token")
@@ -50,7 +59,7 @@ class TestAuthZTokenClaims:
     def test_expires_at_implementation(self):
         """Test that expires_at is properly implemented."""
         exp_timestamp = 1640995200  # 2022-01-01 00:00:00 UTC
-        claims = AuthZTokenClaims(token="test-token", sub="user-123", exp=exp_timestamp)
+        claims = AuthZTokenClaims(**_base_claims_data(exp=exp_timestamp))
 
         expected_dt = datetime.fromtimestamp(exp_timestamp, tz=timezone.utc)
         assert claims.expires_at() == expected_dt
@@ -62,7 +71,9 @@ class TestAuthZTokenClaims:
         exp_timestamp = int(future_time.timestamp())
 
         claims = AuthZTokenClaims(
-            token="current-token", sub="current-user", exp=exp_timestamp
+            **_base_claims_data(
+                token="current-token", sub="current-user", exp=exp_timestamp
+            )
         )
 
         assert claims.sub == "current-user"
@@ -79,14 +90,18 @@ class TestAuthZTokenClaims:
         exp_timestamp = int(past_time.timestamp())
 
         claims = AuthZTokenClaims(
-            token="expired-token", sub="expired-user", exp=exp_timestamp
+            **_base_claims_data(
+                token="expired-token", sub="expired-user", exp=exp_timestamp
+            )
         )
 
         assert claims.expired  # Should be expired
 
     def test_claims_edge_case_zero_timestamp(self):
         """Test claims with zero timestamp (epoch)."""
-        claims = AuthZTokenClaims(token="epoch-token", sub="epoch-user", exp=0)
+        claims = AuthZTokenClaims(
+            **_base_claims_data(token="epoch-token", sub="epoch-user", exp=0)
+        )
 
         expected_dt = datetime.fromtimestamp(0, tz=timezone.utc)
         assert claims.expires_at() == expected_dt
@@ -134,11 +149,11 @@ class TestAuthZProvider:
 
     async def test_provider_with_custom_claims(self):
         """Test provider with custom claims data."""
-        custom_claims = {
-            "token": "custom-token",
-            "sub": "custom-user-123",
-            "exp": int((datetime.now(timezone.utc) + timedelta(hours=2)).timestamp()),
-        }
+        custom_claims = _base_claims_data(
+            token="custom-token",
+            sub="custom-user-123",
+            exp=int((datetime.now(timezone.utc) + timedelta(hours=2)).timestamp()),
+        )
         provider = ConcreteAuthZProvider(claims_data=custom_claims)
 
         claims = await provider.verify("some-token")
@@ -177,9 +192,11 @@ class TestAuthZProviderMocking:
         """Test mocking successful verification."""
         provider = MockAuthZProvider()
         expected_claims = AuthZTokenClaims(
-            token="mocked-token",
-            sub="mocked-user",
-            exp=int((datetime.now(timezone.utc) + timedelta(hours=1)).timestamp()),
+            **_base_claims_data(
+                token="mocked-token",
+                sub="mocked-user",
+                exp=int((datetime.now(timezone.utc) + timedelta(hours=1)).timestamp()),
+            )
         )
         provider.verify_mock.return_value = expected_claims
 
@@ -196,11 +213,15 @@ class TestAuthZProviderMocking:
         def side_effect(token):
             if token == "valid-token":
                 return AuthZTokenClaims(
-                    token=token,
-                    sub="valid-user",
-                    exp=int(
-                        (datetime.now(timezone.utc) + timedelta(hours=1)).timestamp()
-                    ),
+                    **_base_claims_data(
+                        token=token,
+                        sub="valid-user",
+                        exp=int(
+                            (
+                                datetime.now(timezone.utc) + timedelta(hours=1)
+                            ).timestamp()
+                        ),
+                    )
                 )
             else:
                 raise ValueError("Invalid token")
@@ -219,9 +240,11 @@ class TestAuthZProviderMocking:
         """Test that mock provider tracks calls correctly."""
         provider = MockAuthZProvider()
         mock_claims = AuthZTokenClaims(
-            token="test",
-            sub="test",
-            exp=int((datetime.now(timezone.utc) + timedelta(hours=1)).timestamp()),
+            **_base_claims_data(
+                token="test",
+                sub="test",
+                exp=int((datetime.now(timezone.utc) + timedelta(hours=1)).timestamp()),
+            )
         )
         provider.verify_mock.return_value = mock_claims
 

@@ -1,49 +1,54 @@
-from typing import Any, Type, override
+from typing import Any, Optional, TypedDict
+
 import httpx
 
-from pymidil.client.transport.retry.transport import RetryTransport
+from pymidil.client.transport.retry.protocols import (
+    BackoffStrategy,
+    RetryObserver,
+    RetryStrategy,
+)
+from pymidil.client.transport.retry.transport import AsyncRetryTransport
 
 
-class MidilAsyncClient(httpx.AsyncClient):
+class RetryConfig(TypedDict, total=False):
+    max_attempts: int
+    retry_strategy: RetryStrategy
+    backoff_strategy: BackoffStrategy
+    observer: Optional[RetryObserver]
+
+
+class RetryableAsyncClient(httpx.AsyncClient):
     """
-    This class is a wrapper around httpx.AsyncClient that uses a custom transport class.
-    This is done to allow passing our custom transport class to the AsyncClient constructor while still allowing
-    all the default AsyncClient behavior that is changed when passing a custom transport instance.
+    An httpx.AsyncClient whose transport automatically retries requests
+    (via AsyncRetryTransport). Accepts every regular httpx.AsyncClient keyword
+    argument unchanged, plus an optional `retry_config` to tune retry behavior.
     """
 
     def __init__(
         self,
-        transport_class: Type[RetryTransport] = RetryTransport,
-        transport_kwargs: dict[str, Any] | None = None,
+        retry_config: Optional[RetryConfig] = None,
         **kwargs: Any,
-    ):
-        self._transport_kwargs = transport_kwargs
-        self._transport_class = transport_class
+    ) -> None:
+        self._retry_config: RetryConfig = retry_config or {}
         super().__init__(**kwargs)
 
-    @override
     def _init_transport(  # type: ignore[override]
         self,
-        transport: httpx.AsyncBaseTransport | None = None,
+        transport: Optional[httpx.AsyncBaseTransport] = None,
         **kwargs: Any,
     ) -> httpx.AsyncBaseTransport:
         if transport is not None:
             return super()._init_transport(transport=transport, **kwargs)
 
-        return self._transport_class(
-            wrapped=httpx.AsyncHTTPTransport(
-                **kwargs,
-            ),
-            **(self._transport_kwargs or {}),
+        return AsyncRetryTransport(
+            wrapped=httpx.AsyncHTTPTransport(**kwargs),
+            **self._retry_config,
         )
 
     def _init_proxy_transport(  # type: ignore[override]
         self, proxy: httpx.Proxy, **kwargs: Any
     ) -> httpx.AsyncBaseTransport:
-        return self._transport_class(
-            wrapped=httpx.AsyncHTTPTransport(
-                proxy=proxy,
-                **kwargs,
-            ),
-            **(self._transport_kwargs or {}),
+        return AsyncRetryTransport(
+            wrapped=httpx.AsyncHTTPTransport(proxy=proxy, **kwargs),
+            **self._retry_config,
         )

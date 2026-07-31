@@ -8,7 +8,7 @@ from typing import Callable, Awaitable
 
 from pymidil.web.middleware.auth import (
     AuthContext,
-    CognitoAuthMiddleware,
+    JWKAuthMiddleware,
 )
 from pymidil.auth.interfaces.types import AuthZTokenClaims
 from pymidil.auth.interfaces.authorizer import AuthZProvider
@@ -17,10 +17,10 @@ from pymidil.auth.interfaces.authorizer import AuthZProvider
 class TestAuthContext:
     """Tests for AuthContext class."""
 
-    def test_auth_context_init(self, mock_cognito_claims) -> None:
+    def test_auth_context_init(self, mock_jwt_claims) -> None:
         """Test AuthContext initialization."""
         claims: AuthZTokenClaims = AuthZTokenClaims(
-            token="Bearer test-token", **mock_cognito_claims
+            token="Bearer test-token", **mock_jwt_claims
         )
         raw_headers = {
             "authorization": "Bearer token",
@@ -32,9 +32,9 @@ class TestAuthContext:
         assert context.claims == claims
         assert context._raw_headers == raw_headers
 
-    def test_auth_context_to_dict(self, mock_cognito_claims) -> None:
+    def test_auth_context_to_dict(self, mock_jwt_claims) -> None:
         """Test AuthContext to_dict method."""
-        claims = AuthZTokenClaims(token="Bearer test-token", **mock_cognito_claims)
+        claims = AuthZTokenClaims(token="Bearer test-token", **mock_jwt_claims)
         raw_headers = {"authorization": "Bearer token"}
 
         context = AuthContext(claims=claims, _raw_headers=raw_headers)
@@ -46,8 +46,8 @@ class TestAuthContext:
         assert isinstance(result["claims"], dict)
 
 
-class TestCognitoAuthMiddleware:
-    """Tests for CognitoAuthMiddleware class."""
+class TestJWKAuthMiddleware:
+    """Tests for JWKAuthMiddleware class."""
 
     @pytest.fixture
     def mock_request(self) -> Request:
@@ -67,16 +67,16 @@ class TestCognitoAuthMiddleware:
         return call_next
 
     @pytest.fixture
-    def auth_middleware(self) -> CognitoAuthMiddleware:
-        """Create CognitoAuthMiddleware instance."""
+    def auth_middleware(self) -> JWKAuthMiddleware:
+        """Create JWKAuthMiddleware instance."""
         app = Starlette()
-        return CognitoAuthMiddleware(app)
+        return JWKAuthMiddleware(app)
 
     @pytest.fixture
-    def mock_authorizer(self, mock_cognito_claims) -> AuthZProvider:
+    def mock_authorizer(self, mock_jwt_claims) -> AuthZProvider:
         """Create a mock authorizer."""
         authorizer = AsyncMock()
-        claims = AuthZTokenClaims(token="Bearer test-token", **mock_cognito_claims)
+        claims = AuthZTokenClaims(token="Bearer test-token", **mock_jwt_claims)
         authorizer.verify.return_value = claims
         return authorizer
 
@@ -84,10 +84,10 @@ class TestCognitoAuthMiddleware:
     @patch.dict(
         "os.environ",
         {
-            "MIDIL__AUTH": '{"type": "cognito", "user_pool_id": "test-pool-id", "region": "us-east-1", "client_id": "test-client-id"}',
+            "MIDIL__AUTH": '{"type": "jwk", "issuer": "https://idp.example.com/test", "jwks_url": "https://idp.example.com/test/.well-known/jwks.json"}',
         },
     )
-    @patch("pymidil.web.middleware.auth.CognitoJWTAuthorizer")
+    @patch("pymidil.web.middleware.auth.JWKAuthorizer")
     async def test_dispatch_success(
         self,
         mock_authorizer_class,
@@ -95,12 +95,12 @@ class TestCognitoAuthMiddleware:
         mock_request,
         mock_call_next,
         mock_authorizer,
-        mock_cognito_claims,
+        mock_jwt_claims,
     ) -> None:
         """Test successful authentication in middleware dispatch."""
         # Setup mocks
         mock_authorizer_class.return_value = mock_authorizer
-        claims = AuthZTokenClaims(token="Bearer test-token", **mock_cognito_claims)
+        claims = AuthZTokenClaims(token="Bearer test-token", **mock_jwt_claims)
         mock_authorizer.verify.return_value = claims
 
         # Execute
@@ -120,11 +120,11 @@ class TestCognitoAuthMiddleware:
     @patch.dict(
         "os.environ",
         {
-            "MIDIL__AUTH": '{"type": "cognito", "user_pool_id": "test-pool-id", "region": "us-east-1", "client_id": "test-client-id"}',
+            "MIDIL__AUTH": '{"type": "jwk", "issuer": "https://idp.example.com/test", "jwks_url": "https://idp.example.com/test/.well-known/jwks.json"}',
         },
     )
     @pytest.mark.anyio
-    @patch("pymidil.web.middleware.auth.CognitoJWTAuthorizer")
+    @patch("pymidil.web.middleware.auth.JWKAuthorizer")
     async def test_dispatch_authorization_error(
         self, mock_authorizer_class, auth_middleware, mock_request, mock_call_next
     ) -> None:
@@ -144,10 +144,10 @@ class TestCognitoAuthMiddleware:
     @patch.dict(
         "os.environ",
         {
-            "MIDIL__AUTH": '{"type": "cognito", "user_pool_id": "test-pool-id", "region": "us-east-1", "client_id": "test-client-id"}',
+            "MIDIL__AUTH": '{"type": "jwk", "issuer": "https://idp.example.com/test", "jwks_url": "https://idp.example.com/test/.well-known/jwks.json"}',
         },
     )
-    @patch("pymidil.web.middleware.auth.CognitoJWTAuthorizer")
+    @patch("pymidil.web.middleware.auth.JWKAuthorizer")
     async def test_dispatch_empty_environment(
         self,
         mock_authorizer_class,
@@ -155,12 +155,12 @@ class TestCognitoAuthMiddleware:
         mock_request,
         mock_call_next,
         mock_authorizer,
-        mock_cognito_claims,
+        mock_jwt_claims,
     ) -> None:
         """Test middleware with empty environment variables."""
         # Setup mocks
         mock_authorizer_class.return_value = mock_authorizer
-        claims = AuthZTokenClaims(token="Bearer test-token", **mock_cognito_claims)
+        claims = AuthZTokenClaims(token="Bearer test-token", **mock_jwt_claims)
         mock_authorizer.verify.return_value = claims
 
         # Execute
@@ -169,7 +169,10 @@ class TestCognitoAuthMiddleware:
         # Verify
         assert response.status_code == 200
         mock_authorizer_class.assert_called_once_with(
-            user_pool_id="test-pool-id", region="us-east-1"
+            issuer="https://idp.example.com/test",
+            jwks_url="https://idp.example.com/test/.well-known/jwks.json",
+            audience=None,
+            algorithms=None,
         )
 
     @pytest.mark.anyio

@@ -1,5 +1,5 @@
 from pydantic import BaseModel, PrivateAttr, Field, ConfigDict
-from typing import Optional
+from typing import Optional, Any
 from datetime import datetime, timezone, timedelta
 from dateutil.parser import isoparse
 
@@ -25,26 +25,57 @@ class ExpirableTokenMixin(BaseModel):
 
 
 class AuthNToken(ExpirableTokenMixin):
+    token_type: str = "Bearer"
     expires_at_iso: Optional[str] = None
 
     def expires_at(self) -> Optional[datetime]:
         return isoparse(self.expires_at_iso) if self.expires_at_iso else None
 
 
-class AuthNHeaders(BaseModel):
-    authorization: str = Field(..., alias="Authorization")
-    accept: str = Field(default="application/json", alias="Accept")
-    content_type: str = Field(default="application/json", alias="Content-Type")
-
-    model_config = ConfigDict(
-        extra="allow",
-        populate_by_name=True,
-    )
-
-
 class AuthZTokenClaims(ExpirableTokenMixin):
-    sub: str
-    exp: int  # epoch
+    """
+    Standard JWT authorization claims.
+
+    This model represents claims defined by JWT/OIDC standards.
+    Provider-specific claims are allowed through `extra="allow"`.
+
+    Examples of additional claims:
+        Cognito:
+            email
+            cognito:groups
+
+        Auth0:
+            permissions
+            scope
+
+        Keycloak:
+            realm_access
+            resource_access
+
+        Azure:
+            roles
+    """
+
+    token: str = Field(description="Original encoded JWT token")
+    sub: str = Field(description="Unique identifier of the token subject")
+    iss: str = Field(description="Issuer of the JWT")
+    aud: str | list[str] = Field(description="Token audience")
+    iat: int = Field(description="Issued-at timestamp")
+    exp: int = Field(description="Expiration timestamp")
+    nbf: int | None = Field(default=None, description="Not-before timestamp")
+    jti: str | None = Field(default=None, description="Unique token identifier")
+
+    model_config = ConfigDict(extra="allow")
+
+    def get_claim(
+        self,
+        name: str,
+        default: Any = None,
+    ) -> Any:
+        """
+        Retrieve custom provider claims safely.
+        """
+        return getattr(self, name, default)
 
     def expires_at(self) -> datetime:
         return datetime.fromtimestamp(self.exp, tz=timezone.utc)

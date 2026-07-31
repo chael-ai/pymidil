@@ -1,6 +1,5 @@
 import asyncio
-import time
-from typing import Any, Callable, Coroutine, Optional, Union
+from typing import Any, Callable, Coroutine, Optional
 
 import httpx
 
@@ -14,21 +13,21 @@ from pymidil.client.transport.retry.backoff import ExponentialBackoffAdaptor
 from loguru import logger
 
 
-class RetryTransport(httpx.AsyncBaseTransport, httpx.BaseTransport):
+class AsyncRetryTransport(httpx.AsyncBaseTransport):
     def __init__(
         self,
-        wrapped: Union[httpx.BaseTransport, httpx.AsyncBaseTransport],
+        wrapped: httpx.AsyncBaseTransport,
         max_attempts: int = 5,
         retry_strategy: RetryStrategy = DefaultRetryStrategy(),
         backoff_strategy: BackoffStrategy = ExponentialBackoffAdaptor(),
         observer: Optional[RetryObserver] = None,
     ) -> None:
         """
-        A custom HTTP transport for httpx that automatically retries requests using a configurable
-        retry and backoff strategy.
+        A custom async HTTP transport for httpx that automatically retries requests using a
+        configurable retry and backoff strategy.
 
         Args:
-            wrapped (Union[httpx.BaseTransport, httpx.AsyncBaseTransport]):
+            wrapped (httpx.AsyncBaseTransport):
                 The underlying transport to wrap and delegate requests to.
             max_attempts (int, optional):
                 The maximum number of attempts for a request (including the initial attempt).
@@ -47,41 +46,10 @@ class RetryTransport(httpx.AsyncBaseTransport, httpx.BaseTransport):
         self._backoff_strategy = backoff_strategy
         self._observer = observer
 
-    def handle_request(self, request: httpx.Request) -> httpx.Response:
-        return self._sync_retry_loop(request, self._wrapped.handle_request)  # type: ignore
-
     async def handle_async_request(self, request: httpx.Request) -> httpx.Response:
-        return await self._async_retry_loop(request, self._wrapped.handle_async_request)  # type: ignore
+        return await self._retry_loop(request, self._wrapped.handle_async_request)
 
-    def _sync_retry_loop(
-        self, request: httpx.Request, send: Callable[..., httpx.Response]
-    ) -> httpx.Response:
-        response = None
-        for attempt in range(1, self._max_attempts + 1):
-            error = None
-            try:
-                response = send(request)
-                if not self._retry_strategy.should_retry(request, response, None):
-                    return response
-                response.close()
-            except Exception as exc:
-                error = exc
-                if not self._retry_strategy.should_retry(request, None, exc):
-                    raise
-            msg = f"Retry {attempt} for {request.method} {request.url}"
-            if error:
-                logger.warning(f"{msg} due to error: {error}")
-            elif response:
-                logger.warning(f"{msg} with status: {response.status_code}")
-            time.sleep(
-                self._backoff_strategy.calculate_sleep(
-                    attempt, response.headers if response else {}
-                )
-            )
-            request = self._observer.on_retry(request) if self._observer else request
-        return response  # type: ignore # May be failed last attempt
-
-    async def _async_retry_loop(
+    async def _retry_loop(
         self,
         request: httpx.Request,
         send: Callable[..., Coroutine[Any, Any, httpx.Response]],
@@ -112,7 +80,4 @@ class RetryTransport(httpx.AsyncBaseTransport, httpx.BaseTransport):
         return response  # type: ignore # Final failed attempt
 
     async def aclose(self) -> None:
-        await self._wrapped.aclose()  # type: ignore
-
-    def close(self) -> None:
-        self._wrapped.close()  # type: ignore
+        await self._wrapped.aclose()

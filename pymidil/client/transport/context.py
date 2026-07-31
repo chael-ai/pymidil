@@ -3,10 +3,9 @@ import contextvars
 import hashlib
 import json
 
-from pymidil.client.transport.factory import MidilAsyncClient
-from pymidil.client.transport.retry.transport import RetryTransport
+from pymidil.client.transport.factory import RetryableAsyncClient, RetryConfig
 
-from typing import Any
+from typing import Any, Optional
 
 
 _http_client_var: contextvars.ContextVar[
@@ -18,15 +17,25 @@ _client_params_var: contextvars.ContextVar[str | None] = contextvars.ContextVar(
 )
 
 
-def _get_http_client_context(timeout: int = 60, **kwargs: Any) -> httpx.AsyncClient:
-    params: dict[str, Any] = {"timeout": timeout}
+def _get_http_client_context(
+    timeout: int = 60,
+    retry_config: Optional[RetryConfig] = None,
+    **kwargs: Any,
+) -> httpx.AsyncClient:
+    params: dict[str, Any] = {"timeout": timeout, "retry_config": retry_config}
     for key, value in kwargs.items():
         if hasattr(value, "__str__") and "URL" in str(type(value)):
             params[key] = str(value)
         else:
             params[key] = value
 
-    params_hash = hashlib.md5(json.dumps(params, sort_keys=True).encode()).hexdigest()
+    # default=repr: retry_config may hold strategy/observer objects, which
+    # aren't natively JSON-serializable; repr() is good enough for a cache key
+    # (worst case: a fresh strategy instance misses the cache instead of
+    # crashing get_http_async_client() outright).
+    params_hash = hashlib.md5(
+        json.dumps(params, sort_keys=True, default=repr).encode()
+    ).hexdigest()
 
     cached_params = _client_params_var.get()
     client = _http_client_var.get()
@@ -34,9 +43,9 @@ def _get_http_client_context(timeout: int = 60, **kwargs: Any) -> httpx.AsyncCli
     if client is not None and cached_params == params_hash:
         return client
 
-    client = MidilAsyncClient(
-        transport_class=RetryTransport,
+    client = RetryableAsyncClient(
         timeout=timeout,
+        retry_config=retry_config,
         **kwargs,
     )
 
@@ -46,5 +55,9 @@ def _get_http_client_context(timeout: int = 60, **kwargs: Any) -> httpx.AsyncCli
     return client
 
 
-def get_http_async_client(timeout: int = 60, **kwargs: Any) -> httpx.AsyncClient:
-    return _get_http_client_context(timeout, **kwargs)
+def get_http_async_client(
+    timeout: int = 60,
+    retry_config: Optional[RetryConfig] = None,
+    **kwargs: Any,
+) -> httpx.AsyncClient:
+    return _get_http_client_context(timeout, retry_config, **kwargs)

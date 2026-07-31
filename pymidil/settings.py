@@ -1,4 +1,4 @@
-from typing import Dict, Optional, Literal, Any
+from typing import Dict, Optional, Literal, Any, overload
 from pydantic_settings import BaseSettings, SettingsConfigDict
 from pymidil.exceptions import (
     SettingsError,
@@ -6,7 +6,12 @@ from pymidil.exceptions import (
     EventSettingsError,
     ApiSettingsError,
 )
-from pymidil.auth.config import AuthConfig
+from pymidil.auth.config import (
+    AuthConfig,
+    OAuth2ClientCredentialsConfig,
+    StaticCredentialAuthConfig,
+    JWKAuthorizerConfig,
+)
 from pymidil.web.config import MidilApiConfig
 from pymidil.logger.config import LoggerConfig
 from pymidil.event.config import (
@@ -52,7 +57,7 @@ class ApiSettings(_BaseSettings):
 
 class MidilSettings(_BaseSettings):
     api: Optional[MidilApiConfig] = None
-    auth: Optional[AuthConfig] = None
+    auth: Optional[AuthConfig] = Field(default=None, discriminator="type")
     event: Optional[EventConfig] = None
     logger: Optional[LoggerConfig] = None
 
@@ -70,7 +75,26 @@ class MidilSettings(_BaseSettings):
             )
         return self.api
 
-    def get_auth(self, expected: Literal["cognito"]) -> AuthConfig:
+    @overload
+    def get_auth(
+        self, expected: Literal["client_credentials"]
+    ) -> OAuth2ClientCredentialsConfig:
+        ...
+
+    @overload
+    def get_auth(
+        self, expected: Literal["static_credential"]
+    ) -> StaticCredentialAuthConfig:
+        ...
+
+    @overload
+    def get_auth(self, expected: Literal["jwk"]) -> JWKAuthorizerConfig:
+        ...
+
+    def get_auth(
+        self,
+        expected: Literal["client_credentials", "static_credential", "jwk"],
+    ) -> AuthConfig:
         if self.auth is None:
             raise AuthSettingsError(
                 f"Authentication settings for '{expected}' not configured. "

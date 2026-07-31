@@ -26,13 +26,13 @@ def event_loop():
 
 
 @pytest.fixture
-def mock_cognito_claims():
-    """Mock Cognito JWT claims for testing."""
+def mock_jwt_claims():
+    """Mock JWT claims for testing."""
     return {
         "sub": "test-user-id",
         "email": "test@example.com",
         "name": "Test User",
-        "iss": "https://cognito-idp.us-east-1.amazonaws.com/us-east-1_test",
+        "iss": "https://idp.example.com/test",
         "aud": "test-client-id",
         "iat": int((datetime.now(timezone.utc) - timedelta(minutes=5)).timestamp()),
         "exp": int((datetime.now(timezone.utc) + timedelta(hours=1)).timestamp()),

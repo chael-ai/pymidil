@@ -5,7 +5,6 @@ from dateutil import parser
 from pymidil.auth.interfaces.types import (
     ExpirableTokenMixin,
     AuthNToken,
-    AuthNHeaders,
     AuthZTokenClaims,
 )
 
@@ -112,84 +111,26 @@ class TestAuthNToken:
             assert isinstance(result, datetime)
 
 
-class TestAuthNHeaders:
-    """Tests for AuthNHeaders."""
-
-    def test_authn_headers_init_minimal(self):
-        """Test AuthNHeaders initialization with minimal data."""
-        headers = AuthNHeaders(**{"Authorization": "Bearer token"})
-
-        assert headers.authorization == "Bearer token"
-        assert headers.accept == "application/json"  # default
-        assert headers.content_type == "application/json"  # default
-
-    def test_authn_headers_init_full(self):
-        """Test AuthNHeaders initialization with all fields."""
-        headers = AuthNHeaders(
-            **{
-                "Authorization": "Bearer token",
-                "Accept": "application/vnd.api+json",
-                "Content-Type": "application/vnd.api+json",
-            }
-        )
-
-        assert headers.authorization == "Bearer token"
-        assert headers.accept == "application/vnd.api+json"
-        assert headers.content_type == "application/vnd.api+json"
-
-    def test_authn_headers_with_aliases(self):
-        """Test AuthNHeaders field aliases work correctly."""
-        headers = AuthNHeaders(
-            **{
-                "Authorization": "Bearer token",
-                "Accept": "text/plain",
-                "Content-Type": "text/plain",
-            }
-        )
-
-        assert headers.authorization == "Bearer token"
-        assert headers.accept == "text/plain"
-        assert headers.content_type == "text/plain"
-
-    def test_authn_headers_model_dump_with_aliases(self):
-        """Test model_dump uses aliases correctly."""
-        headers = AuthNHeaders(
-            **{
-                "Authorization": "Bearer token",
-                "Accept": "application/xml",
-                "Content-Type": "application/xml",
-            }
-        )
-
-        dumped = headers.model_dump(by_alias=True)
-
-        assert "Authorization" in dumped
-        assert "Accept" in dumped
-        assert "Content-Type" in dumped
-        assert dumped["Authorization"] == "Bearer token"
-
-    def test_authn_headers_extra_fields_allowed(self):
-        """Test that extra fields are allowed in AuthNHeaders."""
-        headers = AuthNHeaders(
-            **{
-                "Authorization": "Bearer token",
-                "custom_header": "custom_value",
-            }
-        )
-
-        # Should not raise an error due to extra="allow"
-        assert headers.authorization == "Bearer token"
-
-
 class TestAuthZTokenClaims:
     """Tests for AuthZTokenClaims."""
+
+    def _base_claims(self, **overrides):
+        defaults = dict(
+            token="test-token",
+            sub="user-123",
+            iss="https://idp.example.com/test",
+            aud="test-client-id",
+            iat=int(datetime.now(timezone.utc).timestamp()),
+        )
+        defaults.update(overrides)
+        return defaults
 
     def test_authz_token_claims_init(self):
         """Test AuthZTokenClaims initialization."""
         exp_timestamp = int(
             (datetime.now(timezone.utc) + timedelta(hours=1)).timestamp()
         )
-        claims = AuthZTokenClaims(token="test-token", sub="user-123", exp=exp_timestamp)
+        claims = AuthZTokenClaims(**self._base_claims(exp=exp_timestamp))
 
         assert claims.token == "test-token"
         assert claims.sub == "user-123"
@@ -198,7 +139,7 @@ class TestAuthZTokenClaims:
     def test_expires_at_method(self):
         """Test expires_at method converts epoch to datetime correctly."""
         exp_timestamp = 1640995200  # 2022-01-01 00:00:00 UTC
-        claims = AuthZTokenClaims(token="test-token", sub="user-123", exp=exp_timestamp)
+        claims = AuthZTokenClaims(**self._base_claims(exp=exp_timestamp))
 
         expected_dt = datetime.fromtimestamp(exp_timestamp, tz=timezone.utc)
         assert claims.expires_at() == expected_dt
@@ -209,9 +150,7 @@ class TestAuthZTokenClaims:
         past_timestamp = int(
             (datetime.now(timezone.utc) - timedelta(hours=1)).timestamp()
         )
-        claims = AuthZTokenClaims(
-            token="test-token", sub="user-123", exp=past_timestamp
-        )
+        claims = AuthZTokenClaims(**self._base_claims(exp=past_timestamp))
 
         assert claims.expired
 
@@ -221,8 +160,6 @@ class TestAuthZTokenClaims:
         future_timestamp = int(
             (datetime.now(timezone.utc) + timedelta(hours=1)).timestamp()
         )
-        claims = AuthZTokenClaims(
-            token="test-token", sub="user-123", exp=future_timestamp
-        )
+        claims = AuthZTokenClaims(**self._base_claims(exp=future_timestamp))
 
         assert not claims.expired
