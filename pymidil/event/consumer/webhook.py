@@ -1,20 +1,36 @@
-from fastapi import APIRouter, Request, HTTPException
+"""Webhook consumer — adapts an HTTP POST into an ``Event`` + ``WebhookDelivery``.
+
+A push transport: there is no broker to ack against, so the HTTP response is the
+acknowledgement (``WebhookDelivery`` inherits the no-op dispositions). HTTP
+headers carry the W3C trace context.
+"""
+
+from __future__ import annotations
+
+import hashlib
+import json
+from typing import Any, Dict, Literal, Mapping
+
+from fastapi import APIRouter, HTTPException, Request
 from loguru import logger
-from pymidil.event.message import Message
+
 from pymidil.event.consumer.strategies.push import (
     PushEventConsumer,
     PushEventConsumerConfig,
 )
-from typing import Literal, Dict, Any, Mapping
-import hashlib
-import json
-from pydantic import Field
+from pymidil.event.core import Event, NoAckDelivery
+from pymidil.event.wire import EVENT_TYPE_FIELD, IDEMPOTENCY_KEY_FIELD
 
 
-class WebhookMessage(Message):
-    headers: Dict[str, Any] = Field(
-        default_factory=dict, description="Additional message properties or headers"
-    )
+class WebhookDelivery(NoAckDelivery):
+    """One HTTP webhook delivery — carries the request headers for tracing."""
+
+    def __init__(self, event: Event, *, headers: Mapping[str, str]) -> None:
+        super().__init__(event)
+        self._headers = dict(headers)
+
+    def carrier(self) -> Mapping[str, str]:
+        return {str(k): str(v) for k, v in self._headers.items()}
 
 
 class WebhookConsumerEventConfig(PushEventConsumerConfig):
@@ -28,10 +44,6 @@ class WebhookConsumer(PushEventConsumer):
         self._config: WebhookConsumerEventConfig = config
         self._router = APIRouter()
 
-        logger.info("Starting webhook consumer")
-
-        # Create the route statically so it's available for FastAPI's OpenAPI schema.
-        # FastAPI needs to know about all routes at startup time to include them in the OpenAPI schema that powers the Swagger UI
         @self._router.post(
             self._config.endpoint,
             summary="Receive webhook events",
@@ -46,21 +58,21 @@ class WebhookConsumer(PushEventConsumer):
     def entrypoint(self) -> APIRouter:
         return self._router
 
-    def carrier(self, message: Message) -> Mapping[str, str]:
-        """HTTP request headers carry the trace context (W3C traceparent)."""
-        headers = getattr(message, "headers", {}) or {}
-        return {str(k): str(v) for k, v in headers.items()}
+    def _to_event(self, data: Any, headers: Mapping[str, str]) -> Event:
+        return Event(
+            id=headers.get(IDEMPOTENCY_KEY_FIELD) or self._hash_body(data),
+            source=headers.get("source") or "webhook",
+            type=headers.get(EVENT_TYPE_FIELD) or "unknown",
+            data=data,
+            idempotency_key=headers.get(IDEMPOTENCY_KEY_FIELD),
+        )
 
-    async def _handler(
-        self,
-        request: Request,
-    ) -> Dict[str, Any]:
+    async def _handler(self, request: Request) -> Dict[str, Any]:
         try:
             data = await request.json()
             headers = dict(request.headers)
-            message_id = self._hash_body(data)
-            message = WebhookMessage(body=data, id=message_id, headers=headers)
-            await self.dispatch(message)
+            delivery = WebhookDelivery(self._to_event(data, headers), headers=headers)
+            await self.dispatch(delivery)
             return {"status": "ok"}
         except Exception as e:
             logger.exception("Webhook event handling failed")
@@ -71,14 +83,8 @@ class WebhookConsumer(PushEventConsumer):
         return hashlib.sha256(body_str.encode("utf-8")).hexdigest()
 
     async def start(self) -> None:
-        """
-        Setup the webhook consumer routes to receive events.
-        """
         logger.info(f"Webhook consumer ready at {self._config.endpoint}")
 
     async def stop(self) -> None:
         self._subscribers.clear()
         logger.info("Webhook consumer stopped")
-
-    # Push transport: ack/retry/dlq inherit Acknowledger's no-op defaults — the
-    # HTTP response is the acknowledgement.

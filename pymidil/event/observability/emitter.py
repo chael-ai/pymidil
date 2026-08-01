@@ -1,4 +1,4 @@
-"""Telemetry emitter (A2).
+"""Telemetry emitter.
 
 A concrete ``DispatchHook`` that builds a :class:`TelemetryEnvelope` at each
 terminal stage of the dispatch lifecycle and ships it to a ``TelemetrySink``.
@@ -11,11 +11,9 @@ and ``duplicate`` are produced by later milestones (DLQ replay / idempotency).
 
 from __future__ import annotations
 
-from typing import Any, Mapping, Optional
+from typing import TYPE_CHECKING, Any, Mapping, Optional
 
 from loguru import logger
-
-from pymidil.event.context import get_current_event
 from pymidil.event.observability.envelope import (
     EventKind,
     EventStatus,
@@ -26,10 +24,11 @@ from pymidil.event.observability.hooks import (
     ProducerHook,
     PublishRecord,
 )
-from pymidil.event.observability.protocols import MessageProtocol
 from pymidil.event.observability.sinks.base import TelemetrySink
 from pymidil.event.otel import coerce_header_value, current_span_ids
-from pymidil.utils.time import utcnow
+
+if TYPE_CHECKING:
+    from pymidil.event.core import Delivery
 
 
 def clean_metadata(metadata: Mapping[str, Any]) -> dict:
@@ -96,21 +95,21 @@ class TelemetryDispatchHook(DispatchHook):
         self._include_payload = include_payload
 
     async def on_complete(
-        self, message: MessageProtocol, consumer_name: str, duration_ms: float
+        self, delivery: "Delivery", consumer_name: str, duration_ms: float
     ) -> None:
         await self._emit(
-            message, consumer_name, EventStatus.SUCCESS, processing_time_ms=duration_ms
+            delivery, consumer_name, EventStatus.SUCCESS, processing_time_ms=duration_ms
         )
 
-    async def on_duplicate(self, message: MessageProtocol, consumer_name: str) -> None:
-        await self._emit(message, consumer_name, EventStatus.DUPLICATE)
+    async def on_duplicate(self, delivery: "Delivery", consumer_name: str) -> None:
+        await self._emit(delivery, consumer_name, EventStatus.DUPLICATE)
 
     async def on_failure(
-        self, message: MessageProtocol, consumer_name: str, error: Exception
+        self, delivery: "Delivery", consumer_name: str, error: Exception
     ) -> None:
         reason, klass = self._describe_error(error)
         await self._emit(
-            message,
+            delivery,
             consumer_name,
             EventStatus.FAILED,
             failure_reason=reason,
@@ -118,12 +117,12 @@ class TelemetryDispatchHook(DispatchHook):
         )
 
     async def on_retry(
-        self, message: MessageProtocol, consumer_name: str, errors: list
+        self, delivery: "Delivery", consumer_name: str, errors: list
     ) -> None:
         first = errors[0] if errors else None
         reason, klass = self._describe_error(first)
         await self._emit(
-            message,
+            delivery,
             consumer_name,
             EventStatus.RETRYING,
             failure_reason=reason,
@@ -132,7 +131,7 @@ class TelemetryDispatchHook(DispatchHook):
 
     async def on_dead_letter(
         self,
-        message: MessageProtocol,
+        delivery: "Delivery",
         consumer_name: str,
         error: Exception | None = None,
     ) -> None:
@@ -141,7 +140,7 @@ class TelemetryDispatchHook(DispatchHook):
         else:
             reason, klass = "moved to dead-letter queue", "DeadLetter"
         await self._emit(
-            message,
+            delivery,
             consumer_name,
             EventStatus.DLQ,
             failure_reason=reason,
@@ -150,7 +149,7 @@ class TelemetryDispatchHook(DispatchHook):
 
     async def _emit(
         self,
-        message: MessageProtocol,
+        delivery: "Delivery",
         consumer_name: str,
         status: EventStatus,
         *,
@@ -159,7 +158,7 @@ class TelemetryDispatchHook(DispatchHook):
         failure_class: Optional[str] = None,
     ) -> None:
         envelope = self._build_envelope(
-            message,
+            delivery,
             consumer_name,
             status,
             processing_time_ms=processing_time_ms,
@@ -175,17 +174,17 @@ class TelemetryDispatchHook(DispatchHook):
 
     def build_envelope(
         self,
-        message: MessageProtocol,
+        delivery: "Delivery",
         consumer_name: str,
         status: EventStatus,
         **fields: Any,
     ) -> TelemetryEnvelope:
         """Public builder — useful for emitting dlq/duplicate from other call sites."""
-        return self._build_envelope(message, consumer_name, status, **fields)
+        return self._build_envelope(delivery, consumer_name, status, **fields)
 
     def _build_envelope(
         self,
-        message: MessageProtocol,
+        delivery: "Delivery",
         consumer_name: str,
         status: EventStatus,
         *,
@@ -193,49 +192,29 @@ class TelemetryDispatchHook(DispatchHook):
         failure_reason: Optional[str] = None,
         failure_class: Optional[str] = None,
     ) -> TelemetryEnvelope:
-        metadata: Mapping[str, Any] = getattr(message, "metadata", {}) or {}
+        event = delivery.event
+        extensions: Mapping[str, Any] = event.extensions or {}
         trace_id, span_id, parent_span_id = current_span_ids()
         return TelemetryEnvelope(
-            message_id=str(message.id),
-            event_type=self._event_type(metadata, consumer_name),
+            message_id=delivery.transport_id,
+            event_type=event.type or consumer_name,
             status=status,
             broker=self._broker or consumer_name,
             consumer=self._consumer,
             source_service=self._source_service,
-            occurred_at=getattr(message, "timestamp", None) or utcnow(),
-            attempts=self._attempts(metadata),
+            occurred_at=event.time,
+            attempts=delivery.retry_count,
             processing_time_ms=processing_time_ms,
             trace_id=trace_id,
             span_id=span_id,
             parent_span_id=parent_span_id,
-            idempotency_key=getattr(message, "idempotency_key", None)
-            or coerce_header_value(metadata.get("idempotency_key"))
-            or str(message.id),
-            replayed_from=coerce_header_value(metadata.get("replayed_from")),
+            idempotency_key=event.dedup_key,
+            replayed_from=coerce_header_value(extensions.get("replayed_from")),
             failure_reason=failure_reason,
             failure_class=failure_class,
-            payload=getattr(message, "body", None) if self._include_payload else None,
-            metadata=self._clean_metadata(metadata),
+            payload=event.data if self._include_payload else None,
+            metadata=self._clean_metadata(extensions),
         )
-
-    @staticmethod
-    def _event_type(metadata: Mapping[str, Any], consumer_name: str) -> str:
-        from_meta = coerce_header_value(metadata.get("event_type"))
-        if from_meta:
-            return from_meta
-        event = get_current_event()
-        if event is not None and event.event_type:
-            return event.event_type
-        return consumer_name
-
-    @staticmethod
-    def _attempts(metadata: Mapping[str, Any]) -> int:
-        raw = metadata.get("ApproximateReceiveCount") or metadata.get("attempts")
-        value = coerce_header_value(raw)
-        try:
-            return int(value) if value is not None else 1
-        except (TypeError, ValueError):
-            return 1
 
     @staticmethod
     def _clean_metadata(metadata: Mapping[str, Any]) -> dict:
@@ -313,30 +292,30 @@ class TelemetryProducerHook(ProducerHook):
         failure_reason: Optional[str],
         failure_class: Optional[str],
     ) -> TelemetryEnvelope:
-        metadata: Mapping[str, Any] = record.metadata or {}
+        event = record.event
+        extensions: Mapping[str, Any] = event.extensions or {}
         trace_id, span_id, parent_span_id = current_span_ids()
-        key = coerce_header_value(metadata.get("idempotency_key"))
-        # A failed publish has no MessageId; fall back to the logical key so the
-        # record is still identifiable and group-able.
-        message_id = record.message_id or key or "unpublished"
+        # A failed publish has no transport id; fall back to the event's logical
+        # dedup key so the record is still identifiable and group-able.
+        message_id = record.message_id or event.dedup_key or "unpublished"
         return TelemetryEnvelope(
             message_id=message_id,
-            event_type=coerce_header_value(metadata.get("event_type")) or "unknown",
+            event_type=event.type or "unknown",
             status=status,
             kind=EventKind.PRODUCER,
             broker=self._broker,
             consumer=None,
             source_service=self._source_service,
-            occurred_at=utcnow(),
+            occurred_at=event.time,
             attempts=1,
             processing_time_ms=record.duration_ms,
             trace_id=trace_id,
             span_id=span_id,
             parent_span_id=parent_span_id,
-            idempotency_key=key or message_id,
-            replayed_from=coerce_header_value(metadata.get("replayed_from")),
+            idempotency_key=event.dedup_key,
+            replayed_from=coerce_header_value(extensions.get("replayed_from")),
             failure_reason=failure_reason,
             failure_class=failure_class,
-            payload=record.payload if self._include_payload else None,
-            metadata=clean_metadata(metadata),
+            payload=event.data if self._include_payload else None,
+            metadata=clean_metadata(extensions),
         )

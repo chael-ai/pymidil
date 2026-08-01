@@ -1,13 +1,21 @@
-import asyncio
+import inspect
 from abc import ABC, abstractmethod
 from typing import Any, Awaitable, Callable, Optional, Union
 
 from loguru import logger
 
-from pymidil.event.message import Message
+from pymidil.event.core import Event
 
-FilterFn = Callable[[Message], Union[Awaitable[bool], bool]]
-ErrorFn = Callable[[Message, Exception], Union[Awaitable[None], None]]
+FilterFn = Callable[[Event], Union[Awaitable[bool], bool]]
+ErrorFn = Callable[[Event, Exception], Union[Awaitable[None], None]]
+
+
+async def _maybe_await(value: Any) -> Any:
+    """Normalize a sync-or-async call result to its value (handlers, filters,
+    and error hooks may be either; ``isawaitable`` also covers futures)."""
+    if inspect.isawaitable(value):
+        return await value
+    return value
 
 
 class EventSubscriber(ABC):
@@ -30,7 +38,7 @@ class EventSubscriber(ABC):
     """
 
     @abstractmethod
-    async def handle(self, event: Message) -> None:
+    async def handle(self, event: Event) -> None:
         """
         Handle an incoming event.
 
@@ -40,13 +48,13 @@ class EventSubscriber(ABC):
         """
         ...
 
-    async def authorize(self, event: Message) -> bool:
+    async def authorize(self, event: Event) -> bool:
         """
         Authorize the event.
         """
         return True
 
-    async def should_handle(self, event: Message) -> bool:
+    async def should_handle(self, event: Event) -> bool:
         """
         Check if the event should be handled. e.g Validate the event payload.
         """
@@ -58,21 +66,21 @@ class EventSubscriber(ABC):
         """
         pass
 
-    async def on_success(self, event: Message) -> None:
+    async def on_success(self, event: Event) -> None:
         """
         Handle a successful event.
         """
         pass
 
-    async def __call__(self, event: Message) -> None:
+    async def __call__(self, event: Event) -> None:
         """
         Invoke the subscriber for the given event.
 
-        This method orchestrates the event handling lifecycle:
-        - Checks if the event should be handled (`should_handle`)
-        - Authorizes the event (`authorize`)
-        - Handles the event (`handle`)
-        - Calls success or error hooks (`on_success`, `on_error`)
+        Orchestrates the lifecycle — ``should_handle`` → ``authorize`` →
+        ``handle`` → ``on_success``/``on_error``. Handlers receive the event
+        and nothing else; they drive the delivery's outcome by what they
+        return or raise (return → ack, ``RetryableEventError`` → retry, any
+        other exception → dead-letter). Settlement belongs to the dispatcher.
         """
         try:
             should_handle = await self.should_handle(event)
@@ -111,7 +119,7 @@ class SubscriberMiddleware(ABC):
     Example usage:
 
         class LoggingMiddleware(SubscriberMiddleware):
-            async def __call__(self, event: Message, call_next: Callable[[Message], Awaitable[Any]]):
+            async def __call__(self, event: Event, call_next: Callable[[Event], Awaitable[Any]]):
                 print(f"Processing event: {event}")
                 result = await call_next(event)
                 print(f"Finished event: {event}")
@@ -119,7 +127,7 @@ class SubscriberMiddleware(ABC):
 
     Args:
         event (Message): The event object to be processed.
-        call_next (Callable[[Message], Awaitable[Any]]): The next handler or middleware in the chain.
+        call_next (Callable[[Event], Awaitable[Any]]): The next handler or middleware in the chain.
 
     Returns:
         Any: The result of processing the event, as returned by the handler or next middleware.
@@ -130,7 +138,7 @@ class SubscriberMiddleware(ABC):
 
     @abstractmethod
     async def __call__(
-        self, event: Message, call_next: Callable[[Message], Awaitable[Any]]
+        self, event: Event, call_next: Callable[[Event], Awaitable[Any]]
     ) -> Any:
         ...
 
@@ -178,32 +186,24 @@ class FunctionSubscriber(EventSubscriber):
         self._filter = filter
         self._on_error = on_error
 
-    async def should_handle(self, event: Message) -> bool:
+    async def should_handle(self, event: Event) -> bool:
         """
         Check if the event should be handled.
         """
         if self._filter is None:
             return True
-        result = self._filter(event)
-        if asyncio.iscoroutine(result):
-            return await result
-        return result  # type: ignore[return-value]
+        return await _maybe_await(self._filter(event))
 
-    async def handle(self, event: Message) -> None:
+    async def handle(self, event: Event) -> None:
         """
         Handle an event by applying all middlewares to the handler.
 
-        Args:
-            event: The event to process.
+        The leaf handler may be sync or async; middlewares operate on the
+        event only.
         """
 
-        # Normalize the leaf handler to an awaitable so both sync and async
-        # handlers (and middleware chains over either) work uniformly.
         async def next_handler(e):
-            result = self.handler(e)
-            if asyncio.iscoroutine(result):
-                return await result
-            return result
+            return await _maybe_await(self.handler(e))
 
         # Apply middlewares in reverse order (so the first is the outermost)
         for mw in reversed(self.middlewares):
@@ -214,13 +214,11 @@ class FunctionSubscriber(EventSubscriber):
             next_handler = wrapped
         await next_handler(event)
 
-    async def on_error(self, event: Message, error: Exception) -> None:
+    async def on_error(self, event: Event, error: Exception) -> None:
         """
         Handle an error that occurred while handling the event.
         """
         if self._on_error is not None:
-            result = self._on_error(event, error)
-            if asyncio.iscoroutine(result):
-                await result
+            await _maybe_await(self._on_error(event, error))
         else:
             logger.error(f"[subscriber] Unhandled error for event {event.id}: {error}")

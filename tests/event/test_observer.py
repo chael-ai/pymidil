@@ -230,7 +230,7 @@ def test_requires_exactly_one_of_sink_or_url():
             consumer="c",
             broker="kafka",
             sink=CapturingSink(),
-            observatory_url="http://obs",
+            base_url="http://obs",
         )
 
 
@@ -239,7 +239,7 @@ def test_control_source_wiring():
     assert isinstance(observer(CapturingSink()).control, NullControlSource)
     # observatory_url → HTTP control source bound to this consumer's identity
     wired = ConsumerObserver(
-        observatory_url="http://obs:8080", consumer="orders-worker", broker="kafka"
+        base_url="http://obs:8080", consumer="orders-worker", broker="kafka"
     )
     assert isinstance(wired.control, HttpControlSource)
     assert "consumers/orders-worker/control" in wired.control._url
@@ -249,7 +249,7 @@ def test_api_key_threads_to_sink_and_control():
     # One key threads to BOTH data-plane surfaces: the telemetry sink and the
     # control-poll source.
     observe = ConsumerObserver(
-        observatory_url="http://obs:8080",
+        base_url="http://obs:8080",
         consumer="orders-worker",
         broker="kafka",
         api_key="mo_secret",
@@ -258,7 +258,7 @@ def test_api_key_threads_to_sink_and_control():
     assert observe.control._headers == {"X-Api-Key": "mo_secret"}
 
     publish = ProducerObserver(
-        observatory_url="http://obs:8080",
+        base_url="http://obs:8080",
         source_service="gateway",
         broker="kafka",
         api_key="mo_secret",
@@ -421,7 +421,7 @@ def test_publisher_requires_exactly_one_of_sink_or_url():
             source_service="s",
             broker="kafka",
             sink=CapturingSink(),
-            observatory_url="http://obs",
+            base_url="http://obs",
         )
 
 

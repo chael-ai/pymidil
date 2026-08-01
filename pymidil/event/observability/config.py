@@ -27,6 +27,38 @@ if TYPE_CHECKING:
 SinkKind = Literal["stdout", "http", "null"]
 
 
+class ObservabilityConfig(BaseSettings):
+    """The Midil Observatory connection contract (env prefix ``MIDIL_``).
+
+    This is *data* — the platform credentials and attribution, read from the
+    environment (or ``.env``) by default and overridable by construction. It
+    holds no behavior; :class:`~pymidil.event.observability.platform.Observability`
+    turns it into a sink and instruments components with it. The API key lives
+    here and is passed to exactly one sink, never onto a transport config.
+
+        MIDIL_OBSERVATORY_URL   base URL of the Observatory API
+        MIDIL_API_KEY           org-scoped key (``mo_…``); optional in dev
+        MIDIL_SERVICE           default service name telemetry is attributed to
+        MIDIL_TELEMETRY         set ``false`` to disable
+    """
+
+    model_config = SettingsConfigDict(env_prefix="MIDIL_", extra="ignore")
+
+    observatory_url: Optional[str] = None
+    api_key: Optional[str] = None
+    service: Optional[str] = None
+    telemetry: bool = True
+
+    @property
+    def active(self) -> bool:
+        """Telemetry needs a destination AND an attribution to be meaningful.
+
+        A URL without a service name would fill the Observatory with
+        ``unknown-service`` rows, so both are required to activate.
+        """
+        return self.telemetry and bool(self.observatory_url) and bool(self.service)
+
+
 class TelemetrySettings(BaseSettings):
     """Env-driven telemetry config (prefix ``MIDIL_TELEMETRY_``)."""
 

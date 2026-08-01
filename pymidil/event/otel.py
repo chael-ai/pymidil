@@ -25,6 +25,11 @@ from opentelemetry.propagate import extract as _extract
 from opentelemetry.propagate import inject as _inject
 from opentelemetry.trace import Link, Span, SpanContext, SpanKind, Tracer
 
+from opentelemetry.sdk.resources import Resource
+from opentelemetry.sdk.trace import TracerProvider
+from opentelemetry.sdk.trace.export import BatchSpanProcessor, ConsoleSpanExporter
+from opentelemetry.sdk.trace.sampling import ParentBased, TraceIdRatioBased
+
 TRACER_NAME = "pymidil.event"
 DISCONTINUITY_ATTR = "midil.trace.discontinuity"
 
@@ -166,10 +171,6 @@ def configure_tracing(
 
     Apps usually own this; provided for convenience. Defaults to a console exporter.
     """
-    from opentelemetry.sdk.resources import Resource
-    from opentelemetry.sdk.trace import TracerProvider
-    from opentelemetry.sdk.trace.export import BatchSpanProcessor, ConsoleSpanExporter
-    from opentelemetry.sdk.trace.sampling import ParentBased, TraceIdRatioBased
 
     provider = TracerProvider(
         resource=Resource.create({"service.name": service_name}),

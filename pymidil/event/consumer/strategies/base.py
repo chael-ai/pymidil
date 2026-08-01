@@ -2,40 +2,20 @@ from __future__ import annotations
 
 import asyncio
 import time
-from abc import abstractmethod
+from abc import ABC, abstractmethod
 from threading import Lock
-from typing import Annotated, Any, Dict, List, Mapping, Optional, Set
+from typing import Annotated, Any, List, Optional, Set
 
 from loguru import logger
 from pydantic import BaseModel, Field
 from dataclasses import dataclass
 
-from pymidil.event.acknowledgement import Acknowledger
+from pymidil.event.core import Delivery, Event
 from pymidil.event.exceptions import RetryableEventError
 from pymidil.event.idempotency.policy import IdempotencyPolicy
-from pymidil.event.message import Message
 from pymidil.event.observability.hooks import DispatchHook
 from pymidil.event.otel import consumer_span
 from pymidil.event.subscriber.base import EventSubscriber
-
-
-class ConsumerMessage(Message):
-    """An inbound message as received from a pull transport.
-
-    Adds the delivery context the base :class:`Message` deliberately omits: the
-    ``ack_handle`` needed to acknowledge/redeliver, and ``metadata`` — the broker's
-    delivery attributes/headers (SQS message+system attributes, etc.). Consumers
-    read trace context out of ``metadata`` via their ``carrier()`` adapter.
-    """
-
-    ack_handle: Optional[str] = Field(
-        default=None,
-        description="Token or handle required to ack/nack/delete this message",
-    )
-    metadata: Dict[str, Any] = Field(
-        default_factory=dict,
-        description="Broker delivery attributes/headers (e.g. SQS message attributes)",
-    )
 
 
 class BaseConsumerConfig(BaseModel):
@@ -66,22 +46,21 @@ class FailureOutcome:
 DispatchOutcome = SuccessOutcome | RetryOutcome | FailureOutcome
 
 
-class EventConsumer(Acknowledger):
+class EventConsumer(ABC):
     """
     Abstract base for all event consumers.
 
-    An EventConsumer is a SOURCE Connector — it receives messages from an
-    external backend and dispatches them to registered EventSubscribers.
+    An EventConsumer is a SOURCE Connector — it receives a transport
+    :class:`~pymidil.event.core.Delivery` (which carries the ``Event``) and
+    dispatches the event to registered EventSubscribers.
 
-    A consumer *is* an :class:`Acknowledger`: dispatch resolves each outcome into
-    a disposition (``ack`` / ``retry`` / ``dlq``) and calls it on the consumer's
-    acknowledger, which defaults to ``self``. Inject a different one with
-    ``use_acknowledger`` when a disposition (typically ``dlq``) must vary
-    independently of the ingress transport.
+    Disposition (``ack`` / ``retry`` / ``dlq``) lives on the ``Delivery`` — the
+    transport attempt owns how it is settled — so dispatch resolves an outcome
+    and calls it on the delivery, no per-consumer acknowledger casting.
 
     The dispatch lifecycle is instrumented through DispatchHooks, which observe
     each stage without modifying this class — Open/Closed Principle. Subclasses
-    implement start(), stop(), and (for pull transports) ack()/retry()/dlq().
+    implement start() and stop(), and construct Deliveries from their transport.
     """
 
     def __init__(
@@ -89,14 +68,12 @@ class EventConsumer(Acknowledger):
         config: BaseConsumerConfig,
         *,
         idempotency: Optional[IdempotencyPolicy] = None,
-        acknowledger: Optional[Acknowledger] = None,
     ) -> None:
         self._config = config
         self._subscribers: Set[EventSubscriber] = set()
         self._subscription_lock = Lock()
         self._dispatch_hooks: List[DispatchHook] = []
         self._idempotency: Optional[IdempotencyPolicy] = idempotency
-        self._acknowledger: Acknowledger = acknowledger or self
 
     @property
     def name(self) -> str:
@@ -109,29 +86,31 @@ class EventConsumer(Acknowledger):
     def remove_hook(self, hook: DispatchHook) -> None:
         self._dispatch_hooks = [h for h in self._dispatch_hooks if h is not hook]
 
-    def use_idempotency(self, policy: IdempotencyPolicy) -> None:
-        """Enable consumer-level deduplication for every subscriber via ``policy``."""
+    def use_idempotency(self, policy: Optional[IdempotencyPolicy] = None) -> None:
+        """Enable consumer-level deduplication for every subscriber.
+
+        Zero-arg is the sensible default: an in-memory store keyed on the
+        message's typed ``idempotency_key`` (falling back to its id). Pass a
+        policy for a durable store (Redis) or a custom key function.
+        """
+        if policy is None:
+            from pymidil.event.idempotency import (
+                IdempotencyPolicy as _Policy,
+                InMemoryIdempotencyStore,
+            )
+
+            policy = _Policy(InMemoryIdempotencyStore())
         self._idempotency = policy
 
-    def use_acknowledger(self, acknowledger: Acknowledger) -> None:
-        """Override how dispositions are applied (e.g. dead-letter to a store)."""
-        self._acknowledger = acknowledger
+    def _dedup_key(self, event: Event) -> Optional[str]:
+        """The dedup key for this event, or None when idempotency is disabled.
 
-    def carrier(self, message: Message) -> Mapping[str, str]:
-        """The trace-propagation carrier for this message.
-
-        Transports override this to expose their native header mechanism (SQS
-        message attributes, HTTP headers, …). The default is empty — no
-        propagation — so generic dispatch never reaches into a transport-specific
-        ``Message`` field.
+        Honors a custom ``key_fn`` if the policy sets one; the default resolves
+        to ``event.dedup_key`` (the override, else the logical id).
         """
-        return {}
-
-    def _idempotency_key(self, message: Message) -> Optional[str]:
-        """The dedup key for this message, or None when idempotency is disabled."""
         if self._idempotency is None:
             return None
-        return self._idempotency.key_fn(message)
+        return self._idempotency.key_fn(event)
 
     async def _release_claim(self, key: str) -> None:
         if self._idempotency is not None:
@@ -151,19 +130,17 @@ class EventConsumer(Acknowledger):
         with self._subscription_lock:
             self._subscribers.discard(subscriber)
 
-    async def dispatch(self, message: Message) -> None:
-        """Continue the incoming trace, then run the dispatch lifecycle (A1).
+    async def dispatch(self, delivery: Delivery) -> None:
+        """Continue the incoming trace, then run the dispatch lifecycle.
 
-        The trace is extracted from the transport's carrier (``carrier()``) and a
-        child CONSUMER span is bound for the whole lifecycle, so subscribers and
+        The trace is extracted from the delivery's ``carrier()`` and a child
+        CONSUMER span is bound for the whole lifecycle, so subscribers and
         dispatch hooks observe a coherent, correlated trace across broker hops.
-        A missing upstream context is flagged as a discontinuity rather than
-        silently rooting a new trace.
         """
-        with consumer_span(self.carrier(message), self.name):
-            await self._dispatch(message)
+        with consumer_span(delivery.carrier(), self.name):
+            await self._dispatch(delivery)
 
-    async def _dispatch(self, message: Message) -> None:
+    async def _dispatch(self, delivery: Delivery) -> None:
         """
         Dispatch a message to all subscribers.
 
@@ -186,91 +163,77 @@ class EventConsumer(Acknowledger):
         be re-processed.
         """
 
-        key = self._idempotency_key(message)
+        event = delivery.event
+        key = self._dedup_key(event)
         if key is not None:
             policy = self._idempotency
             assert policy is not None  # key only resolves when a policy is configured
             if not await policy.store.claim(key, policy.ttl_seconds):
                 logger.debug(
-                    f"{self.name} duplicate {message.id} (key={key}) short-circuited"
+                    f"{self.name} duplicate {event.id} (key={key}) short-circuited"
                 )
-                await self._safe_notify_hooks("on_duplicate", message)
-                await self._acknowledger.ack(message)
+                await self._safe_notify_hooks("on_duplicate", delivery)
+                await delivery.ack()
                 return
 
         start = time.monotonic()
 
         try:
-            await self._safe_notify_hooks(
-                "on_receive",
-                message,
-            )
+            await self._safe_notify_hooks("on_receive", delivery)
 
             if not self._subscribers:
                 logger.warning(
-                    f"No subscribers registered for " f"{self.name} event {message.id}"
+                    f"No subscribers registered for {self.name} event {event.id}"
                 )
-
-                await self._acknowledger.ack(message)
+                await delivery.ack()
                 return
 
-            subscriber_results = await self._execute_subscribers(message)
+            subscriber_results = await self._execute_subscribers(event)
 
             duration_ms = (time.monotonic() - start) * 1000
 
-            outcome = self._determine_outcome(
-                subscriber_results,
-                duration_ms,
-                message,
-            )
+            outcome = self._determine_outcome(subscriber_results, duration_ms, event)
 
             # Keep the claim only for a successful outcome; release on
             # retry/failure so a redelivery is free to re-process.
             if key is not None and not isinstance(outcome, SuccessOutcome):
                 await self._release_claim(key)
 
-            await self._handle_outcome(
-                outcome,
-                message,
-            )
+            await self._handle_outcome(outcome, delivery)
 
         except Exception:
             if key is not None:
                 await self._release_claim(key)
             logger.exception(
-                f"Dispatcher failed unexpectedly for " f"{self.name} event {message.id}"
+                f"Dispatcher failed unexpectedly for {self.name} event {event.id}"
             )
-
             raise
 
-    async def _execute_subscribers(
-        self,
-        message: Message,
-    ) -> dict[str, Any]:
-        """
-        Execute all subscribers concurrently and
-        preserve subscriber identity.
-        """
+    async def _execute_subscribers(self, event: Event) -> dict[str, Any]:
+        """Execute all subscribers concurrently, preserving subscriber identity.
 
+        Each subscriber receives the event — nothing else; the outcome of a
+        dispatch is decided by what subscribers return or raise.
+        """
+        # Snapshot once: the set may be mutated by subscribe()/unsubscribe()
+        # while we await, and iterating it twice across that await would
+        # mispair (or strict-zip-error) results against subscribers.
+        subscribers = list(self._subscribers)
         results = await asyncio.gather(
-            *(subscriber(message) for subscriber in self._subscribers),
+            *(subscriber(event) for subscriber in subscribers),
             return_exceptions=True,
         )
 
         return {
             self._subscriber_name(subscriber): result
-            for subscriber, result in zip(
-                self._subscribers,
-                results,
-                strict=True,
-            )
+            for subscriber, result in zip(subscribers, results, strict=True)
         }
 
     def _determine_outcome(
         self,
         results: dict[str, Any],
         duration_ms: float,
-        message: Message,
+        event: Event,
     ) -> DispatchOutcome:
         """
         Resolve subscriber results into a single
@@ -288,7 +251,7 @@ class EventConsumer(Acknowledger):
                 logger.warning(
                     f"Subscriber '{subscriber_name}' "
                     f"requested retry for "
-                    f"{self.name} event {message.id}"
+                    f"{self.name} event {event.id}"
                 )
                 retryable_errors.append(result)
                 continue
@@ -297,7 +260,7 @@ class EventConsumer(Acknowledger):
                 logger.error(
                     f"Subscriber '{subscriber_name}' "
                     f"failed for "
-                    f"{self.name} event {message.id}: "
+                    f"{self.name} event {event.id}: "
                     f"{result}"
                 )
 
@@ -311,7 +274,7 @@ class EventConsumer(Acknowledger):
         if exceptions:
             return FailureOutcome(
                 exception_group=ExceptionGroup(
-                    f"{self.name} event " f"{message.id} failed",
+                    f"{self.name} event {event.id} failed",
                     exceptions,
                 )
             )
@@ -323,64 +286,37 @@ class EventConsumer(Acknowledger):
     async def _handle_outcome(
         self,
         outcome: DispatchOutcome,
-        message: Message,
+        delivery: Delivery,
     ) -> None:
+        event = delivery.event
         match outcome:
             case RetryOutcome(errors=errors):
-                logger.debug(f"{self.name} event " f"{message.id} " f"will be retried")
-
-                await self._safe_notify_hooks(
-                    "on_retry",
-                    message,
-                    errors=errors,
-                )
-
-                await self._acknowledger.retry(message)
+                logger.debug(f"{self.name} event {event.id} will be retried")
+                await self._safe_notify_hooks("on_retry", delivery, errors=errors)
+                await delivery.retry()
 
             case FailureOutcome(exception_group=group):
-                logger.error(f"{self.name} event " f"{message.id} failed: " f"{group}")
-
+                logger.error(f"{self.name} event {event.id} failed: {group}")
                 # Non-retryable failure → dead-letter (diverted for inspection),
-                # reported once via on_dead_letter. The DLQ envelope carries the
-                # failure reason/class.
-                await self._safe_notify_hooks(
-                    "on_dead_letter",
-                    message,
-                    error=group,
-                )
-
-                await self._acknowledger.dlq(message, error=group)
+                # reported once via on_dead_letter.
+                await self._safe_notify_hooks("on_dead_letter", delivery, error=group)
+                await delivery.dlq(group)
 
             case SuccessOutcome(duration_ms=duration_ms):
                 await self._safe_notify_hooks(
-                    "on_complete",
-                    message,
-                    duration_ms=duration_ms,
+                    "on_complete", delivery, duration_ms=duration_ms
                 )
-
-                await self._acknowledger.ack(message)
+                await delivery.ack()
 
     async def _safe_notify_hooks(
-        self,
-        event: str,
-        message: Message,
-        **kwargs: Any,
+        self, stage: str, delivery: Delivery, **kwargs: Any
     ) -> None:
-        """
-        Hook failures should never affect
-        message acknowledgement.
-        """
-
+        """Hook failures never affect settlement of the delivery."""
         try:
-            await self._notify_hooks(
-                event,
-                message,
-                **kwargs,
-            )
-
+            await self._notify_hooks(stage, delivery, **kwargs)
         except Exception:
             logger.exception(
-                f"Hook '{event}' failed for " f"{self.name} event " f"{message.id}"
+                f"Hook '{stage}' failed for {self.name} event {delivery.event.id}"
             )
 
     @staticmethod
@@ -393,18 +329,13 @@ class EventConsumer(Acknowledger):
             repr(subscriber),
         )
 
-    async def _notify_hooks(self, stage: str, message: Message, **kwargs: Any) -> None:
-        """
-        Notify all dispatch hooks of the event lifecycle stage.
-
-        Args:
-            stage: The stage of the event lifecycle.
-            message: The message to notify the hooks about.
-            **kwargs: Additional keyword arguments to pass to the hook.
-        """
+    async def _notify_hooks(
+        self, stage: str, delivery: Delivery, **kwargs: Any
+    ) -> None:
+        """Notify all dispatch hooks of the lifecycle ``stage`` with the delivery."""
         for hook in self._dispatch_hooks:
             try:
-                await getattr(hook, stage)(message, self.name, **kwargs)
+                await getattr(hook, stage)(delivery, self.name, **kwargs)
             except Exception as exc:
                 logger.warning(
                     f"[{self.name}] Hook {hook.__class__.__name__}.{stage} raised: {exc}"

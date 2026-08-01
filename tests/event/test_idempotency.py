@@ -1,7 +1,18 @@
 import pytest
 
+from pymidil.event.core import Event
 from pymidil.event.idempotency import InMemoryIdempotencyStore, default_idempotency_key
-from pymidil.event.message import Message
+
+
+@pytest.fixture
+def anyio_backend() -> str:
+    return "asyncio"
+
+
+def _event(**over) -> Event:
+    base = dict(id="m1", source="booking-svc", type="BookingCreated", data={})
+    base.update(over)
+    return Event(**base)
 
 
 @pytest.mark.anyio
@@ -29,11 +40,9 @@ def test_evict_expired_prunes_only_stale_entries():
 
 
 def test_default_key_prefers_typed_field_then_id():
-    # No reliance on metadata: typed idempotency_key, else the message id.
-    assert default_idempotency_key(Message(id="m1", body={})) == "m1"
+    # No reliance on metadata: typed idempotency_key, else the event id.
+    assert default_idempotency_key(_event()) == "m1"
     assert (
-        default_idempotency_key(
-            Message(id="m1", body={}, idempotency_key="BK-1:Created")
-        )
+        default_idempotency_key(_event(idempotency_key="BK-1:Created"))
         == "BK-1:Created"
     )

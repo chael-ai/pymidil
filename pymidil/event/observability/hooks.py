@@ -1,24 +1,26 @@
 from __future__ import annotations
 
-from dataclasses import dataclass, field
-from typing import Any, Mapping, Optional
+from dataclasses import dataclass
+from typing import TYPE_CHECKING, Optional
 
-from pymidil.event.observability.protocols import MessageProtocol
+if TYPE_CHECKING:
+    from pymidil.event.core import Delivery, Event
 
 
 @dataclass(slots=True)
 class PublishRecord:
     """Context for one publish, handed to :class:`ProducerHook` observers.
 
-    Mirrors the ``message`` a :class:`DispatchHook` receives, but for the produce
-    side: the transport delivery id (known only after the send), the destination,
-    the payload and the headers (event_type / idempotency_key / traceparent ride
-    in ``metadata``), plus how long the publish took.
+    The produce-side counterpart to a :class:`~pymidil.event.core.Delivery`: it
+    carries the typed :class:`~pymidil.event.core.Event` being published (so an
+    observer reads ``record.event.type`` / ``.time`` / ``.dedup_key`` off typed
+    fields, symmetric with the consumer's ``delivery.event``), the destination,
+    the transport delivery id (known only after the send), and how long the
+    publish took.
     """
 
     destination: str
-    payload: Any
-    metadata: Mapping[str, Any] = field(default_factory=dict)
+    event: "Event"
     message_id: Optional[str] = None
     duration_ms: Optional[float] = None
 
@@ -32,85 +34,59 @@ class ProducerHook:
     """
 
     async def on_publish(self, record: PublishRecord, producer_name: str) -> None:
-        """
-        Called after a message is durably accepted by the broker.
-
-        Args:
-            record (PublishRecord): The publish record.
-            producer_name (str): The name of the producer.
-        """
+        """Called after a message is durably accepted by the broker."""
         pass
 
     async def on_publish_error(
         self, record: PublishRecord, producer_name: str, error: Exception
     ) -> None:
-        """
-        Called when the publish itself failed (the broker never accepted it).
-
-        Args:
-            record (PublishRecord): The publish record.
-            producer_name (str): The name of the producer.
-            error (Exception): The error that occurred.
-        """
+        """Called when the publish itself failed (the broker never accepted it)."""
         pass
 
 
 class DispatchHook:
+    """Extension point for observing the full dispatch lifecycle.
+
+    Attach hooks to an ``EventConsumer`` via ``add_hook()`` to instrument event
+    flow without modifying consumer or subscriber code — the Open/Closed
+    Principle. Every stage receives the :class:`~pymidil.event.core.Delivery`
+    (which carries the ``event`` and the transport context), so a hook reads
+    one well-typed shape — never a loose message bag.
+
+    All methods are no-ops by default; override only the stages you care about.
     """
-    Extension point for observing the full event dispatch lifecycle.
 
-    Attach hooks to an EventConsumer via add_hook() to instrument
-    message flow without modifying consumer or subscriber code —
-    a clean application of the Open/Closed Principle.
-
-    All methods are no-ops by default. Override only the stages you care
-    about. Multiple hooks may be attached; they are called in order.
-    """
-
-    async def on_receive(self, message: MessageProtocol, consumer_name: str) -> None:
-        """Called immediately when a message arrives at the consumer."""
+    async def on_receive(self, delivery: "Delivery", consumer_name: str) -> None:
+        """Called immediately when a delivery arrives at the consumer."""
         pass
 
     async def on_complete(
-        self,
-        message: MessageProtocol,
-        consumer_name: str,
-        duration_ms: float,
+        self, delivery: "Delivery", consumer_name: str, duration_ms: float
     ) -> None:
-        """Called after all subscribers handled the message without error."""
+        """Called after all subscribers handled the event without error."""
         pass
 
     async def on_failure(
-        self,
-        message: MessageProtocol,
-        consumer_name: str,
-        error: Exception,
+        self, delivery: "Delivery", consumer_name: str, error: Exception
     ) -> None:
         """Called when one or more subscribers raised a non-retryable error."""
         pass
 
     async def on_retry(
-        self,
-        message: MessageProtocol,
-        consumer_name: str,
-        errors: list,
+        self, delivery: "Delivery", consumer_name: str, errors: list
     ) -> None:
-        """Called when the message is being requeued due to a RetryableEventError."""
+        """Called when the event is being requeued due to a RetryableEventError."""
         pass
 
     async def on_dead_letter(
         self,
-        message: MessageProtocol,
+        delivery: "Delivery",
         consumer_name: str,
         error: Exception | None = None,
     ) -> None:
-        """Called when a message is moved to a dead-letter queue."""
+        """Called when an event is moved to a dead-letter queue."""
         pass
 
-    async def on_duplicate(
-        self,
-        message: MessageProtocol,
-        consumer_name: str,
-    ) -> None:
+    async def on_duplicate(self, delivery: "Delivery", consumer_name: str) -> None:
         """Called when a duplicate delivery is short-circuited by idempotency."""
         pass

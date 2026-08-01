@@ -7,6 +7,129 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## Unreleased
 
+### Breaking — event model re-architecture
+
+- **A message is not an event.** The `Message` hierarchy (`Message`,
+  `ConsumerMessage`, `WebhookMessage`), the `ObservedMessage` dataclass, the
+  `MessageProtocol`, and the `Acknowledger` abstraction are **removed**,
+  replaced by two clean concepts in `pymidil.event.core`:
+  - **`Event`** — the immutable business fact, CloudEvents-shaped (`id` ·
+    `source` · `type` · `data` · `subject` · `time` · `datacontenttype` ·
+    `dataschema` · `extensions`), transport-free and serializable. `dedup_key`
+    defaults to `id` (an explicit `idempotency_key` overrides).
+  - **`Delivery`** — one transport attempt (a plain class, not a model — it
+    holds a live ack handle). Owns the disposition (`ack`/`retry`/`dlq`) and
+    `carrier()`; `SqsDelivery`/`WebhookDelivery`/`WebSocketDelivery`/
+    `ObservedDelivery` are the concrete transports. `NoAckDelivery` is the
+    no-settlement base for push/observed transports.
+  Transport specifics (the SQS `{"StringValue"}` envelope, `ApproximateReceiveCount`,
+  region-from-ARN) are now quarantined inside `SqsDelivery` — the rest of the
+  SDK never peels a broker shape. The emitter reads `delivery.event.*` off
+  typed fields (no more defensive `getattr`), and the zero-refactor observer
+  builds a real `Event` + `ObservedDelivery`, so there is one message model,
+  not two bridged by a partial protocol.
+- **Handlers receive the `Event` — and nothing else.** The handler contract is
+  one sentence: `async def handle(self, event)`; what it returns or raises
+  decides the delivery's fate (return → ack, `RetryableEventError` → retry,
+  any other exception → dead-letter). There is no context parameter: an
+  adversarial design review found no surveyed framework passes a
+  zero-capability context (GCF gen2 deleted exactly that shape), attempt-count
+  idiomatically lives in broker/dispatcher policy (SQS `maxReceiveCount`
+  redrive; a dispatcher `max_attempts` is roadmapped) and in telemetry
+  (`envelope.attempts`), and per-handler give-up logic is incoherent under
+  fan-out aggregation anyway (a sibling's retry request overrides it).
+- **Producers publish an `Event` natively.** `publish(event)` replaces
+  `publish(payload, event_type=…, idempotency_key=…)`: the event's `data`
+  becomes the message body and its CloudEvents attributes (`id`, `source`,
+  `type`, `subject`, `time`, `idempotency_key`, `ext_*`) ride the transport's
+  attribute side-channel — CloudEvents *binary content mode*. The one place
+  that mapping is defined is `pymidil.event.wire` (`event_to_wire` /
+  `wire_to_event`), so a consumer reconstructs the same `Event` on the other
+  side, and a foreign producer that didn't stamp the attributes still yields a
+  valid `Event` via the transport's own id/timestamp fallbacks. The transport
+  seam matches: `_publish(event)` (was `_publish(payload, metadata)`) — each
+  transport frames the event for its own wire (SQS side-channels the attributes
+  into `MessageAttributes`, Redis inlines them), symmetric with the consumer's
+  per-transport `wire_to_event`. The vestigial `**kwargs` on `publish`/`_publish`
+  is removed. `EventBus.publish` (a dead, unbuilt convenience) is removed.
+
+### Features
+
+- **The bus is the platform — observability is built in.** `EventBus` is now
+  observed by default: it resolves the Observatory connection contract
+  (`MIDIL_OBSERVATORY_URL` / `MIDIL_API_KEY` / `MIDIL_SERVICE`, via the new
+  `ObservabilityConfig`) at construction and instruments every producer and
+  consumer it builds or that you register — zero telemetry wiring. Turn it off
+  with `EventBus(observability=False)` or pass an explicit `ObservabilityConfig`.
+  The API key lives only inside the bus's telemetry sink, never on a transport
+  config. Raw components built outside a bus stay pure (no import- or
+  construction-time telemetry side effects), so unit tests never emit by
+  accident.
+- **`bus.include_consumer(name, instance, *, service=None)` /
+  `include_producer(...)`** — register pre-built, hand-assembled components
+  (custom sessions, injected dependencies) alongside config-built ones through
+  one registration funnel, where instrumentation is applied uniformly.
+  `service` overrides attribution for a process running several logical services.
+- **`bus.run()`** — the paved-road worker entrypoint: start all consumers, wait
+  on SIGINT/SIGTERM, shut down cleanly (consumers, producers, telemetry sink).
+- **`consumer.use_idempotency()`** now takes no arguments for the common case —
+  an in-memory store keyed on the delivery's `event.dedup_key` (the
+  `idempotency_key` when present, else the event `id`), which round-trips
+  through the wire attributes so it survives redelivery.
+
+### Improvements
+
+- A missing `MIDIL__EVENT` no longer errors: a bus populated entirely through
+  `include_*` is first-class, so declarative config is optional (empty bus,
+  logged as a warning).
+- **One message model, one wire contract, one home.** The seam that used to
+  drift — a `MessageProtocol` declaring only `id` while the emitter read five
+  fields, two message types conforming by accident — is gone by construction:
+  there is a single `Event` model, and the producer/consumer boundary is the
+  single `pymidil.event.wire` mapping. `pymidil/event/message.py` (a file named
+  after the deleted `Message` concept) is removed; its wire attribute-name
+  constants now live in `wire.py` beside the mapping that is their only
+  consumer, and the `MessageBody` payload alias retires with the old
+  `_publish(payload, …)` seam.
+- **The dispatcher owns settlement — exclusively.** Handlers never see the
+  `Delivery` (there is no context object at all — see the handler-contract
+  bullet above): one delivery fans out to many concurrent subscribers, so its
+  disposition is an aggregation of every subscriber's outcome — no single
+  handler may settle it, and settlement routed around the dispatcher bypassed
+  telemetry (a manually dead-lettered message was recorded as SUCCESS).
+  Handlers drive the outcome by what they return or raise — the Lambda model,
+  and the only settlement-authority shape any surveyed multi-listener
+  framework uses. Future handler-facing capabilities, if ever needed, must be
+  non-settling and injected as bound operations, never as the delivery.
+- **A delivery settles exactly once.** `Delivery`'s public `ack()/retry()/dlq()`
+  are now first-disposition-wins latches (a later disposition is refused with
+  an error log, never applied — one physical disposition per attempt); the
+  `disposition`/`settled` properties expose what happened. Transports implement
+  the physical operations in `_ack()/_retry()/_dlq()` and may compose those
+  primitives (SQS dead-lettering sends to the DLQ then deletes from source).
+  This guards every dispatcher settlement path against double-dispatch bugs
+  (Watermill/Kombu precedent).
+- **Handler invocation is plain.** With one handler shape there is nothing to
+  classify: `EventSubscriber.__call__` awaits `self.handle(event)` directly,
+  and `FunctionSubscriber` normalizes its sync-or-async leaf in one place
+  (`inspect.isawaitable`, so futures and custom awaitables work too). The
+  signature-inspection machinery (`invocation.py`) is deleted with the opt-in
+  it existed to serve. A trap for any future re-introduction, learned the hard
+  way: never cache signature classifications by code object —
+  `functools.wraps` wrappers from one decorator share a single code object
+  while `inspect.signature` follows `__wrapped__`, so the first handler
+  inspected poisons the rest. `_execute_subscribers` snapshots the subscriber
+  set so a concurrent `subscribe()` mid-dispatch can no longer mispair
+  results.
+- **Producer telemetry reads the typed `Event`, symmetric with the consumer.**
+  `PublishRecord` now carries the `Event`, so `TelemetryProducerHook` reads
+  `event.type` / `event.time` / `event.dedup_key` / `event.extensions` off typed
+  fields instead of string-re-parsing a wire dict and fabricating a timestamp —
+  the same shape `TelemetryDispatchHook` reads off `delivery.event`. Publish
+  timing + hook notification are hoisted into the `EventProducer` template, so
+  the Redis producer now emits producer telemetry too (it previously emitted
+  none), and both transports settle observability through one path.
+
 ## v0.2.0 (2026-07-23)
 
 The Observatory release: pymidil is now the instrumentation and control SDK for

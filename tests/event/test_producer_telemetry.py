@@ -3,6 +3,7 @@
 import pytest
 
 from pymidil.event import (
+    Event,
     EventKind,
     EventStatus,
     SQSProducer,
@@ -74,11 +75,13 @@ async def test_publish_emits_produced_envelope_with_message_id():
     producer = _producer(_FakeSqsClient(), sink)
 
     await producer.publish(
-        {"booking_id": "BK-1"},
-        metadata={
-            "event_type": "BookingCreated",
-            "idempotency_key": "BK-1:BookingCreated",
-        },
+        Event(
+            id="BK-1",
+            source="booking-svc",
+            type="BookingCreated",
+            data={"booking_id": "BK-1"},
+            idempotency_key="BK-1:BookingCreated",
+        )
     )
 
     assert len(sink.envelopes) == 1
@@ -99,7 +102,9 @@ async def test_failed_publish_emits_failed_producer_envelope_and_reraises():
     producer = _producer(_FakeSqsClient(fail=True), sink)
 
     with pytest.raises(RuntimeError):
-        await producer.publish({"x": 1}, metadata={"event_type": "BookingCreated"})
+        await producer.publish(
+            Event(id="x", source="booking-svc", type="BookingCreated", data={"x": 1})
+        )
 
     assert len(sink.envelopes) == 1
     env = sink.envelopes[0]
@@ -112,4 +117,5 @@ async def test_publish_without_hooks_is_a_noop():
     producer = SQSProducer(
         SQSProducerEventConfig(queue_url=SOURCE), session=_FakeSession(_FakeSqsClient())
     )
-    await producer.publish({"x": 1})  # no hooks attached → no telemetry, no error
+    # no hooks attached → no telemetry, no error
+    await producer.publish(Event(id="x", source="s", type="t", data={"x": 1}))

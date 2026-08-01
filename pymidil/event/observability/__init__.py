@@ -1,9 +1,11 @@
 from pymidil.event.observability.config import (
+    ObservabilityConfig,
     TelemetrySettings,
     attach_telemetry,
     create_sink,
     create_telemetry_hook,
 )
+from pymidil.event.observability.platform import Observability, ObservabilitySpec
 from pymidil.event.observability.emitter import (
     TelemetryDispatchHook,
     TelemetryProducerHook,
@@ -21,12 +23,11 @@ from pymidil.event.observability.hooks import (
 from pymidil.event.observability.observer import (
     ConsumerObserver,
     Observation,
-    ObservedMessage,
+    ObservedDelivery,
     ProducerObserver,
     PublishObservation,
     default_classification,
 )
-from pymidil.event.observability.protocols import MessageProtocol
 from pymidil.event.observability.sinks import (
     NullTelemetrySink,
     StdoutTelemetrySink,
@@ -38,7 +39,6 @@ __all__ = [
     "DispatchHook",
     "ProducerHook",
     "PublishRecord",
-    "MessageProtocol",
     # telemetry contract
     "TelemetryEnvelope",
     "EventStatus",
@@ -49,7 +49,7 @@ __all__ = [
     # broker-agnostic observation (A5)
     "ConsumerObserver",
     "Observation",
-    "ObservedMessage",
+    "ObservedDelivery",
     "ProducerObserver",
     "PublishObservation",
     "default_classification",
@@ -57,6 +57,10 @@ __all__ = [
     "TelemetrySink",
     "StdoutTelemetrySink",
     "NullTelemetrySink",
+    # platform integration (default-on, bus-owned)
+    "ObservabilityConfig",
+    "Observability",
+    "ObservabilitySpec",
     # config / wiring
     "TelemetrySettings",
     "create_sink",

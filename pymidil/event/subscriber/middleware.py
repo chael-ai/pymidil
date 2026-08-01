@@ -4,7 +4,7 @@ import asyncio
 from loguru import logger
 from pymidil.event.subscriber.base import SubscriberMiddleware
 from pymidil.utils.retry import BaseAsyncRetryPolicy
-from pymidil.event.message import Message
+from pymidil.event.core import Event
 
 
 class GroupMiddleware(SubscriberMiddleware):
@@ -37,7 +37,7 @@ class GroupMiddleware(SubscriberMiddleware):
         self.fail_fast = fail_fast
 
     async def __call__(
-        self, event: Message, call_next: Callable[[Message], Awaitable[Any]]
+        self, event: Event, call_next: Callable[[Event], Awaitable[Any]]
     ) -> Any:
         async def run_middleware(mw: SubscriberMiddleware):
             await mw(event, call_next)
@@ -100,7 +100,7 @@ class RetryMiddleware(SubscriberMiddleware):
 
 class LoggingMiddleware(SubscriberMiddleware):
     async def __call__(
-        self, event: Any, call_next: Callable[[Message], Awaitable[Any]]
+        self, event: Any, call_next: Callable[[Event], Awaitable[Any]]
     ) -> Any:
         logger.info(f"Event {event} processing started")
         try:

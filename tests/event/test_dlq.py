@@ -1,11 +1,21 @@
 import pytest
 
+from pymidil.event.core import Delivery, Event, NoAckDelivery
 from pymidil.event.dlq import SQSDlqRedriver
-from pymidil.event.message import Message
 from pymidil.event.observability import EventStatus, TelemetryDispatchHook
 from pymidil.event.observability.sinks.base import TelemetrySink
 
 pytestmark = pytest.mark.anyio
+
+
+@pytest.fixture
+def anyio_backend() -> str:
+    return "asyncio"
+
+
+def _delivery(event: Event) -> Delivery:
+    """Wrap an Event in a brokerless Delivery for feeding the emitter."""
+    return NoAckDelivery(event)
 
 
 class ListSink(TelemetrySink):
@@ -22,10 +32,13 @@ async def test_on_dead_letter_emits_dlq_envelope():
     hook = TelemetryDispatchHook(sink, source_service="settlement-svc", broker="sqs")
 
     await hook.on_dead_letter(
-        Message(
-            id="EVT-9",
-            body={"tx": "TX-1"},
-            metadata={"event_type": "SettlementInitiated"},
+        _delivery(
+            Event(
+                id="EVT-9",
+                source="settlement-svc",
+                type="SettlementInitiated",
+                data={"tx": "TX-1"},
+            )
         ),
         "sqs",
         error=RuntimeError("pool exhausted"),
@@ -41,7 +54,9 @@ async def test_on_dead_letter_emits_dlq_envelope():
 async def test_on_dead_letter_without_error_defaults_reason():
     sink = ListSink()
     hook = TelemetryDispatchHook(sink, source_service="svc")
-    await hook.on_dead_letter(Message(id="m", body={}), "sqs")
+    await hook.on_dead_letter(
+        _delivery(Event(id="m", source="svc", type="", data={})), "sqs"
+    )
     assert sink.events[0].status == EventStatus.DLQ
     assert sink.events[0].failure_class == "DeadLetter"
 
@@ -164,12 +179,16 @@ async def test_emitter_surfaces_replayed_from():
 
     sink = ListSink()
     hook = TelemetryDispatchHook(sink, source_service="payment-svc")
-    msg = Message(
-        id="EVT-2",
-        body={},
-        metadata={"event_type": "PaymentRequested", "replayed_from": "abc123"},
+    delivery = _delivery(
+        Event(
+            id="EVT-2",
+            source="payment-svc",
+            type="PaymentRequested",
+            data={},
+            extensions={"replayed_from": "abc123"},
+        )
     )
     with get_tracer().start_as_current_span("process"):
-        await hook.on_complete(msg, "sqs", duration_ms=1.0)
+        await hook.on_complete(delivery, "sqs", duration_ms=1.0)
 
     assert sink.events[0].replayed_from == "abc123"

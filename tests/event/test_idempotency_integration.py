@@ -3,15 +3,19 @@
 Proves the refactor: dedup is applied at the dispatch boundary, so it covers
 every subscriber type (not just FunctionSubscriber) and never cross-blocks
 sibling subscribers on the first delivery. The duplicate signal travels via the
-on_duplicate hook — no message mutation.
+on_duplicate hook — no event mutation.
+
+Dedup keys off ``event.dedup_key`` (the typed ``idempotency_key``, else the
+logical id). A duplicate is a redelivery carrying the same dedup key, delivered
+as a fresh :class:`Delivery` wrapping the :class:`Event`.
 """
 
 import pytest
 
 from pymidil.event.consumer.strategies.base import BaseConsumerConfig, EventConsumer
+from pymidil.event.core import Delivery, Event, NoAckDelivery
 from pymidil.event.exceptions import RetryableEventError
 from pymidil.event.idempotency import IdempotencyPolicy, InMemoryIdempotencyStore
-from pymidil.event.message import Message
 from pymidil.event.observability import EventStatus, TelemetryDispatchHook
 from pymidil.event.observability.sinks.base import TelemetrySink
 from pymidil.event.subscriber.base import EventSubscriber, FunctionSubscriber
@@ -35,12 +39,6 @@ class _MemConsumer(EventConsumer):
     async def stop(self) -> None:
         ...
 
-    async def ack(self, message) -> None:
-        ...
-
-    async def nack(self, message, requeue: bool = False) -> None:
-        ...
-
 
 class ListSink(TelemetrySink):
     def __init__(self) -> None:
@@ -60,12 +58,16 @@ class CountingSubscriber(EventSubscriber):
         self.count += 1
 
 
-def _msg(message_id: str, key: str = "K") -> Message:
-    return Message(
-        id=message_id,
-        body={"v": message_id},
-        idempotency_key=key,
-        metadata={"event_type": "BookingCreated"},
+def _delivery(event_id: str, key: str = "K") -> Delivery:
+    """A fresh delivery carrying an Event; siblings share ``key`` -> duplicate."""
+    return NoAckDelivery(
+        Event(
+            id=event_id,
+            source="booking-svc",
+            type="BookingCreated",
+            data={"v": event_id},
+            idempotency_key=key,
+        )
     )
 
 
@@ -79,8 +81,8 @@ async def test_dedups_delivery_and_emits_duplicate_via_hook():
     consumer.add_hook(TelemetryDispatchHook(sink, source_service="booking-svc"))
     consumer.use_idempotency(IdempotencyPolicy(store))
 
-    await consumer.dispatch(_msg("EVT-1"))
-    await consumer.dispatch(_msg("EVT-2"))  # same key -> duplicate
+    await consumer.dispatch(_delivery("EVT-1"))
+    await consumer.dispatch(_delivery("EVT-2"))  # same dedup key -> duplicate
 
     assert handled == ["EVT-1"]  # second delivery short-circuited
     assert [e.status for e in sink.events] == [
@@ -97,8 +99,8 @@ async def test_dedup_covers_class_based_subscriber():
     consumer.subscribe(subscriber)
     consumer.use_idempotency(IdempotencyPolicy(store))
 
-    await consumer.dispatch(_msg("EVT-1"))
-    await consumer.dispatch(_msg("EVT-2"))  # same key
+    await consumer.dispatch(_delivery("EVT-1"))
+    await consumer.dispatch(_delivery("EVT-2"))  # same dedup key
 
     assert subscriber.count == 1  # deduped even without middleware support
 
@@ -112,10 +114,10 @@ async def test_first_delivery_runs_all_subscribers_then_dedups():
     consumer.subscribe(b)
     consumer.use_idempotency(IdempotencyPolicy(store))
 
-    await consumer.dispatch(_msg("EVT-1"))  # both run — no cross-block
+    await consumer.dispatch(_delivery("EVT-1"))  # both run — no cross-block
     assert (a.count, b.count) == (1, 1)
 
-    await consumer.dispatch(_msg("EVT-2"))  # same key — neither runs
+    await consumer.dispatch(_delivery("EVT-2"))  # same dedup key — neither runs
     assert (a.count, b.count) == (1, 1)
 
 
@@ -126,13 +128,13 @@ async def test_claim_released_on_non_success_outcome():
         async def handle(self, event) -> None:
             ...
 
-        async def __call__(self, event):  # propagate so the outcome is a retry
+        async def __call__(self, event):  # propagate -> retry outcome
             raise RetryableEventError("transient")
 
     consumer = _MemConsumer(_MemConfig())
     consumer.subscribe(Retrying())
     consumer.use_idempotency(IdempotencyPolicy(store))
 
-    await consumer.dispatch(_msg("EVT-1", key="K"))
+    await consumer.dispatch(_delivery("EVT-1", key="K"))
     # retry outcome -> claim released -> a redelivery can be re-processed
     assert await store.claim("K") is True

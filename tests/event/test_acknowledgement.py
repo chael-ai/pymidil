@@ -1,17 +1,37 @@
-"""Acknowledger: consumer-as-acknowledger, SQS dispositions, dispatch wiring."""
+"""Disposition routing: dispatch resolves an outcome and settles the Delivery.
+
+The ``Acknowledger`` abstraction is gone — settlement (ack / retry / dlq) now
+lives on the :class:`~pymidil.event.core.Delivery` (the transport attempt owns
+how it is settled). These pin the successor behaviors:
+
+- ``NoAckDelivery`` dispositions are safe no-ops (was: consumer-as-acknowledger
+  no-op defaults);
+- ``SqsDelivery`` implements the three dispositions against the SQS wire (was:
+  SQS-as-acknowledger dispositions);
+- dispatch maps a subscriber outcome onto ``delivery.ack/retry/dlq`` (was:
+  dispatch → disposition on the acknowledger), verified with a recording
+  Delivery.
+"""
+
+from __future__ import annotations
+
+from typing import Optional
 
 import pytest
 
-from pymidil.event.acknowledgement import Acknowledger
-from pymidil.event.consumer.sqs import SQSConsumer, SQSConsumerEventConfig
+from pymidil.event.consumer.sqs import (
+    SQSConsumer,
+    SQSConsumerEventConfig,
+    SqsDelivery,
+)
 from pymidil.event.consumer.strategies.base import (
     BaseConsumerConfig,
-    ConsumerMessage,
     EventConsumer,
 )
+from pymidil.event.core import Event, NoAckDelivery
 from pymidil.event.exceptions import RetryableEventError
-from pymidil.event.message import Message
 from pymidil.event.subscriber.base import EventSubscriber, FunctionSubscriber
+from pymidil.utils.backoff import ExponentialBackoff
 
 pytestmark = pytest.mark.anyio
 
@@ -33,17 +53,30 @@ class _MemConsumer(EventConsumer):
         ...
 
 
-# --- consumer IS an Acknowledger, with no-op defaults ---
-async def test_consumer_is_acknowledger_with_noop_defaults():
-    consumer = _MemConsumer(_Cfg())
-    assert isinstance(consumer, Acknowledger)
-    # no overrides -> all three dispositions are safe no-ops
-    await consumer.ack(Message(id="1", body={}))
-    await consumer.retry(Message(id="1", body={}))
-    await consumer.dlq(Message(id="1", body={}), error=RuntimeError("x"))
+def _event(**over) -> Event:
+    base = dict(id="EVT-1", source="orders-svc", type="order.created", data={"v": 1})
+    base.update(over)
+    return Event(**base)
 
 
-# --- SQS implements the three dispositions ---
+# --- NoAckDelivery: the three dispositions are safe no-ops ---
+async def test_noack_delivery_dispositions_are_noops():
+    # no broker settlement -> each disposition returns without effect
+    # (fresh delivery per disposition: a delivery settles exactly once)
+    assert await NoAckDelivery(_event()).ack() is None
+    assert await NoAckDelivery(_event()).retry() is None
+    assert await NoAckDelivery(_event()).dlq(RuntimeError("x")) is None
+
+
+async def test_noack_delivery_still_latches():
+    delivery = NoAckDelivery(_event())
+    await delivery.ack()
+    assert delivery.settled and delivery.disposition == "ack"
+    await delivery.retry()  # refused: already settled
+    assert delivery.disposition == "ack"
+
+
+# --- SqsDelivery implements the three dispositions against the SQS wire ---
 SOURCE = "arn:aws:sqs:us-east-1:123456789012:source"
 DLQ = "arn:aws:sqs:us-east-1:123456789012:dlq"
 
@@ -83,100 +116,102 @@ class _FakeSession:
         return _FakeCtx(self._client)
 
 
-def _cmsg() -> ConsumerMessage:
-    return ConsumerMessage(
-        id="EVT-1",
-        body={"v": 1},
-        ack_handle="rh-1",
-        metadata={"ApproximateReceiveCount": "3"},
-    )
-
-
-def _sqs(client, *, dlq=DLQ) -> SQSConsumer:
-    return SQSConsumer(
-        SQSConsumerEventConfig(queue_url=SOURCE, dlq_url=dlq),
+def _sqs_delivery(client, *, dlq=DLQ) -> SqsDelivery:
+    config = SQSConsumerEventConfig(queue_url=SOURCE, dlq_url=dlq)
+    return SqsDelivery(
+        _event(),
         session=_FakeSession(client),
+        config=config,
+        backoff=ExponentialBackoff(base_delay=5, max_delay=300),
+        message_id="EVT-1",
+        receipt_handle="rh-1",
+        raw_attributes={"ApproximateReceiveCount": "3"},
     )
 
 
 async def test_sqs_ack_deletes_from_source():
     client = _FakeSqsClient()
-    await _sqs(client).ack(_cmsg())
+    await _sqs_delivery(client).ack()
     assert client.deleted[0]["ReceiptHandle"] == "rh-1"
     assert client.deleted[0]["QueueUrl"] == SOURCE
 
 
 async def test_sqs_retry_resets_visibility():
     client = _FakeSqsClient()
-    await _sqs(client).retry(_cmsg())
+    await _sqs_delivery(client).retry()
     assert client.visibility[0]["ReceiptHandle"] == "rh-1"
     assert not client.deleted and not client.sent
 
 
 async def test_sqs_dlq_sends_then_deletes():
     client = _FakeSqsClient()
-    await _sqs(client).dlq(_cmsg())
+    await _sqs_delivery(client).dlq()
     assert client.sent[0]["QueueUrl"] == DLQ
     assert client.deleted[0]["QueueUrl"] == SOURCE
 
 
 async def test_sqs_dlq_without_dlq_falls_back_to_retry():
     client = _FakeSqsClient()
-    await _sqs(client, dlq=None).dlq(_cmsg())
+    await _sqs_delivery(client, dlq=None).dlq()
     assert client.visibility and not client.sent
 
 
-# --- dispatch maps outcome -> disposition on the acknowledger ---
-class _RecordingAck(Acknowledger):
-    def __init__(self) -> None:
+# --- SQSConsumer still wires an SqsDelivery from the raw wire ---
+def test_sqs_consumer_constructs():
+    consumer = SQSConsumer(
+        SQSConsumerEventConfig(queue_url=SOURCE, dlq_url=DLQ),
+        session=_FakeSession(_FakeSqsClient()),
+    )
+    assert isinstance(consumer, EventConsumer)
+
+
+# --- dispatch maps outcome -> disposition on the delivery ---
+class _RecordingDelivery(NoAckDelivery):
+    """A recording Delivery double: captures which disposition dispatch calls."""
+
+    def __init__(self, event: Event) -> None:
+        super().__init__(event)
         self.calls: list = []
 
-    async def ack(self, message) -> None:
+    async def _ack(self) -> None:
         self.calls.append("ack")
 
-    async def retry(self, message) -> None:
+    async def _retry(self) -> None:
         self.calls.append("retry")
 
-    async def dlq(self, message, error=None) -> None:
+    async def _dlq(self, error: Optional[Exception] = None) -> None:
         self.calls.append("dlq")
 
 
-async def _dispatch_with(subscriber) -> _RecordingAck:
+async def _dispatch_with(subscriber) -> _RecordingDelivery:
     consumer = _MemConsumer(_Cfg())
-    rec = _RecordingAck()
-    consumer.use_acknowledger(rec)
     consumer.subscribe(subscriber)
-    await consumer.dispatch(Message(id="1", body={}))
-    return rec
+    delivery = _RecordingDelivery(_event())
+    await consumer.dispatch(delivery)
+    return delivery
 
 
 async def test_success_outcome_acks():
     async def handler(event):
         return None
 
-    rec = await _dispatch_with(FunctionSubscriber(handler=handler))
-    assert rec.calls == ["ack"]
+    delivery = await _dispatch_with(FunctionSubscriber(handler=handler))
+    assert delivery.calls == ["ack"]
 
 
 async def test_retryable_outcome_retries():
     class Retrying(EventSubscriber):
         async def handle(self, event) -> None:
-            ...
-
-        async def __call__(self, event):
             raise RetryableEventError("transient")
 
-    rec = await _dispatch_with(Retrying())
-    assert rec.calls == ["retry"]
+    delivery = await _dispatch_with(Retrying())
+    assert delivery.calls == ["retry"]
 
 
 async def test_failure_outcome_dead_letters():
     class Failing(EventSubscriber):
         async def handle(self, event) -> None:
-            ...
-
-        async def __call__(self, event):
             raise ValueError("boom")
 
-    rec = await _dispatch_with(Failing())
-    assert rec.calls == ["dlq"]
+    delivery = await _dispatch_with(Failing())
+    assert delivery.calls == ["dlq"]

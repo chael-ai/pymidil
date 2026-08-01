@@ -1,12 +1,14 @@
 from __future__ import annotations
 
+import time
 from abc import abstractmethod, ABC
-from typing import Any, Dict, List, Optional
+from typing import TYPE_CHECKING, Awaitable, Callable, List, Optional
 
 from loguru import logger
 from pydantic import BaseModel, Field
 
-from pymidil.event.message import MessageBody
+if TYPE_CHECKING:
+    from pymidil.event.core import Event
 from pymidil.event.observability.hooks import ProducerHook, PublishRecord
 
 
@@ -66,11 +68,50 @@ class EventProducer(ABC):
                     f"on_publish_error raised: {exc}"
                 )
 
-    @abstractmethod
-    async def publish(
-        self, payload: MessageBody, metadata: Optional[Dict[str, Any]] = None, **kwargs
+    async def publish(self, event: "Event") -> None:
+        """Publish an :class:`Event`.
+
+        The event's ``data`` becomes the message body; its identity/metadata
+        attributes (id, source, type, subject, time, idempotency_key,
+        extensions) ride in the transport's attribute side-channel via
+        :func:`~pymidil.event.wire.event_to_wire`, so a consumer reconstructs
+        the same event on the other side. Transports implement :meth:`_publish`
+        (framing + trace injection + send) and settle observability through
+        :meth:`_send_and_notify`.
+        """
+        return await self._publish(event)
+
+    async def _send_and_notify(
+        self,
+        event: "Event",
+        destination: str,
+        send: Callable[[], Awaitable[Optional[str]]],
     ) -> None:
-        ...
+        """Time the ``send``, then notify producer hooks (success or error).
+
+        Transports call this from *inside* their producer span so the produced
+        telemetry records that span. ``send`` performs the broker call and
+        returns the transport delivery id (or ``None`` for id-less transports).
+        A hook failure never breaks the publish; a broker failure re-raises
+        after the error hook fires.
+        """
+        record = PublishRecord(destination=destination, event=event)
+        start = time.monotonic()
+        try:
+            record.message_id = await send()
+        except Exception as error:
+            record.duration_ms = (time.monotonic() - start) * 1000
+            await self._notify_publish_error(record, error)
+            raise
+        record.duration_ms = (time.monotonic() - start) * 1000
+        await self._notify_published(record)
+
+    @abstractmethod
+    async def _publish(self, event: "Event") -> None:
+        """Transport-specific framing + send. Never called directly — use
+        :meth:`publish`. Implementations derive the body (``event.data``) and the
+        wire attributes (:func:`~pymidil.event.wire.event_to_wire`), inject trace
+        context, and settle through :meth:`_send_and_notify`."""
 
     @abstractmethod
     async def close(self) -> None:

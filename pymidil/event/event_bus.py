@@ -1,7 +1,10 @@
 from __future__ import annotations
 
-from typing import Any, Dict, Mapping, Optional
+import asyncio
+import signal
+from typing import Any, Dict, Optional
 
+from loguru import logger
 from pydantic_settings import BaseSettings
 
 from pymidil.event.consumer.strategies.pull import PullEventConsumer
@@ -9,6 +12,7 @@ from pymidil.event.consumer.strategies.push import PushEventConsumer
 from pymidil.event.producer.base import EventProducer
 from pymidil.event.producer.redis import RedisProducer, RedisProducerEventConfig
 from pymidil.event.observability.hooks import DispatchHook
+from pymidil.event.observability.platform import Observability, ObservabilitySpec
 from pymidil.event.producer.sqs import SQSProducer, SQSProducerEventConfig
 from pymidil.event.consumer.sqs import SQSConsumer, SQSConsumerEventConfig
 from pymidil.event.consumer.webhook import WebhookConsumer, WebhookConsumerEventConfig
@@ -130,31 +134,80 @@ class EventBus:
 
     Manages the lifecycle of all producers and consumers.
 
+    A Midil bus is **observed by default**: it resolves the Observatory
+    connection contract (``MIDIL_*`` env) at construction and instruments every
+    producer/consumer it builds or that you register, so telemetry needs zero
+    wiring. Turn it off with ``EventBus(observability=False)``, or supply an
+    explicit :class:`ObservabilityConfig`. Raw components constructed outside a
+    bus stay pure — telemetry is a property of the platform (the bus), not of
+    the transport primitives, so unit tests never emit by accident.
+
     Usage:
-        bus = EventBus()
-        bus.subscribe(OrderHandler())
-        async with lifespan(app):
-            await bus.start()
+        bus = EventBus()                              # observed
+        bus.include_consumer("orders", my_consumer)   # pre-built, instrumented
+        bus.subscribe(OrderHandler(), target="orders")
+        await bus.run()                               # signals + lifecycle
     """
 
     def __init__(
         self,
         config: Optional[EventConfig] = None,
+        *,
+        observability: ObservabilitySpec = None,
     ) -> None:
         if config is None:
             config = self._config_from_settings()
 
-        self.producers: Mapping[str, EventProducer] = {}
+        self._observability = Observability.resolve(observability)
+
+        self.producers: Dict[str, EventProducer] = {}
         if config.producers:
             for name, producer_config in config.producers.items():
-                producer = EventBusFactory.create_producer(producer_config)
-                self.producers[name] = producer  # type: ignore[index]
+                self.include_producer(
+                    name, EventBusFactory.create_producer(producer_config)
+                )
 
-        self.consumers: Mapping[str, PullEventConsumer | PushEventConsumer] = {}
+        self.consumers: Dict[str, PullEventConsumer | PushEventConsumer] = {}
         if config.consumers:
             for name, consumer_config in config.consumers.items():
-                consumer = EventBusFactory.create_consumer(consumer_config)
-                self.consumers[name] = consumer  # type: ignore[index]
+                self.include_consumer(
+                    name, EventBusFactory.create_consumer(consumer_config)
+                )
+
+    def include_consumer(
+        self,
+        name: str,
+        consumer: PullEventConsumer | PushEventConsumer,
+        *,
+        service: Optional[str] = None,
+    ) -> PullEventConsumer | PushEventConsumer:
+        """Register a pre-built consumer, instrumenting it at the same moment.
+
+        This is where hand-assembled components (custom sessions, injected
+        repositories) meet config-built ones — both flow through one
+        registration point, so telemetry applies uniformly. ``service``
+        overrides the default attribution, which is what a single process
+        running several logical services needs.
+        """
+        if name in self.consumers:
+            raise ConsumerError(f"Consumer '{name}' is already registered")
+        self._observability.instrument_consumer(consumer, service=service)
+        self.consumers[name] = consumer
+        return consumer
+
+    def include_producer(
+        self,
+        name: str,
+        producer: EventProducer,
+        *,
+        service: Optional[str] = None,
+    ) -> EventProducer:
+        """Register a pre-built producer, instrumenting it at the same moment."""
+        if name in self.producers:
+            raise ProducerError(f"Producer '{name}' is already registered")
+        self._observability.instrument_producer(producer, service=service)
+        self.producers[name] = producer
+        return producer
 
     def add_dispatch_hook(
         self, hook: DispatchHook, target: Optional[str] = None
@@ -175,38 +228,6 @@ class EventBus:
         else:
             for consumer in self.consumers.values():
                 consumer.add_hook(hook)
-
-    async def publish(
-        self,
-        payload: Dict[str, Any],
-        target: Optional[str] = None,
-        metadata: Optional[Dict[str, Any]] = None,
-    ) -> None:
-        """
-        Publish an event to a specific producer or all producers.
-
-        Args:
-            payload: The event payload as a dictionary.
-            target: Optional name of the specific producer to publish to.
-                         If None, publishes to all producers.
-            metadata: Optional metadata to include with the event.
-
-        Raises:
-            ValueError: If no producers are configured or if the specified producer is not found.
-        """
-        if not self.producers:
-            raise ProducerError("No producers configured")
-
-        if target:
-            if target not in self.producers:
-                raise ProducerError(
-                    f"Producer '{target}' not found. "
-                    f"Available: {list(self.producers.keys())}"
-                )
-            await self.producers[target].publish(payload, metadata=metadata)
-        else:
-            for producer in self.producers.values():
-                await producer.publish(payload, metadata=metadata)
 
     def subscribe(self, handler: EventSubscriber, target: Optional[str] = None) -> None:
         """
@@ -277,14 +298,65 @@ class EventBus:
             await consumer.stop()
         for producer in self.producers.values():
             await producer.close()
+        await self._observability.aclose()
+
+    async def run(self) -> None:
+        """Run the bus until interrupted — the paved-road worker entrypoint.
+
+        Starts every consumer, then waits on SIGINT/SIGTERM and shuts down
+        cleanly (consumers, producers, telemetry sink). This is the composition
+        root's whole main loop, so services don't hand-roll signal handling::
+
+            async def main() -> None:
+                bus = EventBus()
+                bus.subscribe(OrderHandler(), target="orders")
+                await bus.run()
+
+        Falls back to ``start()`` + a plain wait where signal handlers can't be
+        installed (e.g. a non-main thread), so it never crashes on setup.
+        """
+        await self.start()
+        stop = asyncio.Event()
+        loop = asyncio.get_running_loop()
+        installed = False
+        for sig in (signal.SIGINT, signal.SIGTERM):
+            try:
+                loop.add_signal_handler(sig, stop.set)
+                installed = True
+            except (NotImplementedError, RuntimeError):
+                pass  # not the main thread / unsupported platform
+        logger.info(
+            "EventBus running — {} consumer(s), {} producer(s){}",
+            len(self.consumers),
+            len(self.producers),
+            "" if installed else " (no signal handlers; cancel to stop)",
+        )
+        try:
+            await stop.wait()
+        finally:
+            logger.info("EventBus shutting down…")
+            await self.stop()
 
     @staticmethod
     def _config_from_settings() -> EventConfig:
+        """Declarative config from ``MIDIL__EVENT``, or an empty bus.
+
+        Declarative topology is optional: a bus populated entirely through
+        ``include_consumer`` / ``include_producer`` is a first-class use, so a
+        missing ``MIDIL__EVENT`` yields an empty config rather than an error.
+        """
+        from pymidil.exceptions import EventSettingsError
         from pymidil.settings import get_settings
 
         settings = get_settings()
-        consumers = settings.list_consumers()
-        producers = settings.list_producers()
+        try:
+            consumers = settings.list_consumers()
+            producers = settings.list_producers()
+        except EventSettingsError as error:
+            logger.warning(
+                f"An error occured while trying to load settings {error}, falling back to empty EventConfig ..."
+            )
+            return EventConfig()
         return EventConfig(
             consumers={name: settings.get_consumer(name) for name in consumers},
             producers={name: settings.get_producer(name) for name in producers},

@@ -2,6 +2,7 @@
 
 import pytest
 
+from pymidil.event.core import Event
 from pymidil.event.otel import current_trace_ids, get_tracer
 from pymidil.event.producer.sqs import (
     SQSProducer,
@@ -70,7 +71,7 @@ async def test_sqs_producer_injects_active_trace_into_attributes():
 
     with get_tracer().start_as_current_span("publisher"):
         trace_id, _ = current_trace_ids()
-        await producer.publish({"x": 1})
+        await producer.publish(Event(id="x", source="s", type="t", data={"x": 1}))
 
     attrs = client.sent[0]["MessageAttributes"]
     assert "traceparent" in attrs

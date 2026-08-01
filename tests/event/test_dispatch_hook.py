@@ -1,7 +1,8 @@
 import pytest
 from unittest.mock import MagicMock, patch
 
-from pymidil.event import DispatchHook, MessageProtocol
+from pymidil.event import DispatchHook
+from pymidil.event.core import Delivery, Event, NoAckDelivery
 from pymidil.event.event_bus import EventBus
 from pymidil.event.config import EventConfig
 from pymidil.event.consumer.webhook import WebhookConsumerEventConfig
@@ -9,6 +10,18 @@ from pymidil.event.exceptions import ConsumerError
 
 
 pytestmark = pytest.mark.anyio
+
+
+@pytest.fixture
+def anyio_backend() -> str:
+    return "asyncio"
+
+
+def _delivery(event_id: str) -> Delivery:
+    """A minimal Delivery carrying an Event with the given logical id."""
+    return NoAckDelivery(
+        Event(id=event_id, source="orders-svc", type="order.created", data={})
+    )
 
 
 def _bus_with_consumers(**consumers) -> EventBus:
@@ -23,23 +36,23 @@ def _bus_with_consumers(**consumers) -> EventBus:
 class TestDispatchHookDefaults:
     async def test_on_receive_is_noop(self):
         hook = DispatchHook()
-        message = MagicMock(spec=MessageProtocol, id="msg-1")
-        await hook.on_receive(message, "orders")
+        delivery = _delivery("msg-1")
+        await hook.on_receive(delivery, "orders")
 
     async def test_on_complete_is_noop(self):
         hook = DispatchHook()
-        message = MagicMock(spec=MessageProtocol, id="msg-1")
-        await hook.on_complete(message, "orders", duration_ms=12.5)
+        delivery = _delivery("msg-1")
+        await hook.on_complete(delivery, "orders", duration_ms=12.5)
 
     async def test_on_failure_is_noop(self):
         hook = DispatchHook()
-        message = MagicMock(spec=MessageProtocol, id="msg-1")
-        await hook.on_failure(message, "orders", error=ValueError("boom"))
+        delivery = _delivery("msg-1")
+        await hook.on_failure(delivery, "orders", error=ValueError("boom"))
 
     async def test_on_retry_is_noop(self):
         hook = DispatchHook()
-        message = MagicMock(spec=MessageProtocol, id="msg-1")
-        await hook.on_retry(message, "orders", errors=[])
+        delivery = _delivery("msg-1")
+        await hook.on_retry(delivery, "orders", errors=[])
 
 
 class TestDispatchHookExtension:
@@ -47,25 +60,29 @@ class TestDispatchHookExtension:
         received = []
 
         class RecordingHook(DispatchHook):
-            async def on_receive(self, message, consumer_name):
-                received.append(("on_receive", message.id, consumer_name))
+            async def on_receive(self, delivery, consumer_name):
+                received.append(("on_receive", delivery.event.id, consumer_name))
 
-            async def on_complete(self, message, consumer_name, duration_ms):
-                received.append(("on_complete", message.id, consumer_name, duration_ms))
+            async def on_complete(self, delivery, consumer_name, duration_ms):
+                received.append(
+                    ("on_complete", delivery.event.id, consumer_name, duration_ms)
+                )
 
-            async def on_failure(self, message, consumer_name, error):
-                received.append(("on_failure", message.id, consumer_name, str(error)))
+            async def on_failure(self, delivery, consumer_name, error):
+                received.append(
+                    ("on_failure", delivery.event.id, consumer_name, str(error))
+                )
 
-            async def on_retry(self, message, consumer_name, errors):
-                received.append(("on_retry", message.id, consumer_name))
+            async def on_retry(self, delivery, consumer_name, errors):
+                received.append(("on_retry", delivery.event.id, consumer_name))
 
         hook = RecordingHook()
-        message = MagicMock(spec=MessageProtocol, id="msg-42")
+        delivery = _delivery("msg-42")
 
-        await hook.on_receive(message, "orders")
-        await hook.on_complete(message, "orders", duration_ms=5.0)
-        await hook.on_failure(message, "orders", error=RuntimeError("fail"))
-        await hook.on_retry(message, "orders", errors=[])
+        await hook.on_receive(delivery, "orders")
+        await hook.on_complete(delivery, "orders", duration_ms=5.0)
+        await hook.on_failure(delivery, "orders", error=RuntimeError("fail"))
+        await hook.on_retry(delivery, "orders", errors=[])
 
         assert received == [
             ("on_receive", "msg-42", "orders"),

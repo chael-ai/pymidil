@@ -1,30 +1,30 @@
 """Broker-agnostic observation for consumers AND producers pymidil does not manage.
 
 Teams with existing messaging code (aiokafka, confluent-kafka, pika, …)
-integrate with Midil by *wrapping* their handler/send, not by rewriting onto
+integrate with Midil by *wrapping* your handler/send, not by rewriting onto
 pymidil's classes. :class:`ConsumerObserver` wraps consumption::
 
     observe = ConsumerObserver(
-        observatory_url="http://observatory:8080",
+        base_url="http://observatory:8080",
         consumer="orders-worker",
         broker="kafka",
     )
 
-    async for record in kafka_consumer:                      # their loop, untouched
+    async for record in kafka_consumer:                      # your loop, untouched
         async with observe(record.offset, "OrderPlaced", headers=record.headers):
-            await their_existing_handler(record)             # their code, untouched
+            await your_existing_handler(record)             # your code, untouched
 
 :class:`ProducerObserver` wraps the send — completing the lineage graph with
 the *produced* leg (the ingress node) and making publish failures observable::
 
     publish = ProducerObserver(
-        observatory_url="http://observatory:8080",
+        base_url="http://observatory:8080",
         source_service="checkout-gateway",
         broker="kafka",
     )
 
     async with publish("OrderPlaced", destination="orders", payload=order) as pub:
-        md = await producer.send_and_wait(          # their producer, untouched
+        md = await producer.send_and_wait(          # your producer, untouched
             "orders", value, headers=[(k, v.encode()) for k, v in pub.headers.items()]
         )
         pub.sent(f"orders/{md.partition}/{md.offset}")   # groups with the delivery
@@ -52,7 +52,9 @@ error is logged, never raised into the caller's consume loop.
 from __future__ import annotations
 
 import time
-from dataclasses import dataclass, field
+
+from pymidil.event.core import Event, NoAckDelivery
+from pymidil.utils.time import utcnow
 from datetime import datetime
 from typing import (
     Any,
@@ -82,6 +84,7 @@ from pymidil.event.otel import (
     inject_headers,
     producer_span,
 )
+from pymidil.event.observability.sinks.http import HttpTelemetrySink
 
 #: Anything a transport hands back as headers: a mapping (HTTP, SQS attribute
 #: dicts) or an iterable of key/value pairs (Kafka's ``list[tuple[str, bytes]]``).
@@ -94,10 +97,10 @@ ExceptionClassifier = Callable[[BaseException], EventStatus]
 def default_classification(error: BaseException) -> EventStatus:
     """The honest default for consumers Midil does not manage.
 
-    pymidil's own signals keep their meaning when a team opts into them;
+    pymidil's own signals keep your meaning when a team opts into them;
     any other exception records ``failed`` — "this attempt failed" — because
     the observer cannot know whether the team's broker config will retry or
-    dead-letter it. Teams that do know pass their own classifier.
+    dead-letter it. Teams that do know pass your own classifier.
     """
     if isinstance(error, RetryableEventError):
         return EventStatus.RETRYING
@@ -131,15 +134,37 @@ def _normalize_headers(headers: HeadersLike) -> Dict[str, str]:
     return flat
 
 
-@dataclass(frozen=True)
-class ObservedMessage:
-    """The minimal message shape the telemetry emitter reads (MessageProtocol)."""
+class ObservedDelivery(NoAckDelivery):
+    """A :class:`Delivery` built from a FOREIGN broker record (Kafka, pika, …).
 
-    id: str
-    body: Any = None
-    metadata: Mapping[str, Any] = field(default_factory=dict)
-    idempotency_key: Optional[str] = None
-    timestamp: Optional[datetime] = None
+    Lets the zero-refactor observer feed the same emitter a pymidil-managed
+    consumer feeds — one telemetry path, no parallel message notion. No broker
+    settlement (the caller owns the real consumer), so dispositions are no-ops.
+    """
+
+    def __init__(
+        self,
+        event: Event,
+        *,
+        transport_id: str,
+        carrier: Mapping[str, str],
+        attempts: Optional[int] = None,
+    ) -> None:
+        super().__init__(event)
+        self._transport_id = transport_id
+        self._carrier = dict(carrier)
+        self._attempts = attempts or 1
+
+    @property
+    def transport_id(self) -> str:
+        return self._transport_id
+
+    @property
+    def retry_count(self) -> int:
+        return self._attempts
+
+    def carrier(self) -> Mapping[str, str]:
+        return self._carrier
 
 
 class _UnspecifiedFailure(Exception):
@@ -165,7 +190,7 @@ class Observation:
                 await handler(record)
             except TransientBackendError as exc:
                 obs.mark(EventStatus.RETRYING, error=exc)
-                ...their redelivery logic...
+                ...your redelivery logic...
     """
 
     def __init__(
@@ -173,14 +198,12 @@ class Observation:
         *,
         hook: TelemetryDispatchHook,
         consumer_name: str,
-        message: ObservedMessage,
-        carrier: Mapping[str, str],
+        delivery: ObservedDelivery,
         classify: ExceptionClassifier,
     ) -> None:
         self._hook = hook
         self._consumer_name = consumer_name
-        self._message = message
-        self._carrier = carrier
+        self._delivery = delivery
         self._classify = classify
         self._marked: Optional[Tuple[EventStatus, Optional[BaseException]]] = None
         self._start = 0.0
@@ -204,7 +227,7 @@ class Observation:
         self._start = time.monotonic()
         # Continue the upstream trace (or start a flagged-discontinuity root) so
         # the envelope's trace ids come from a real active span.
-        self._span_cm = consumer_span(self._carrier, self._consumer_name)
+        self._span_cm = consumer_span(self._delivery.carrier(), self._consumer_name)
         self._span_cm.__enter__()
         return self
 
@@ -218,7 +241,7 @@ class Observation:
         except Exception as emit_error:  # observation must never break consumption
             logger.warning(
                 f"[observer] telemetry emission failed for "
-                f"{self._message.id}: {emit_error}"
+                f"{self._delivery.event.id}: {emit_error}"
             )
         finally:
             self._span_cm.__exit__(exc_type, exc, tb)
@@ -245,18 +268,18 @@ class Observation:
         return self._classify(exc), exc
 
     async def _emit(self, status: EventStatus, error: Optional[BaseException]) -> None:
-        message, name = self._message, self._consumer_name
+        delivery, name = self._delivery, self._consumer_name
         duration_ms = (time.monotonic() - self._start) * 1000.0
         if status is EventStatus.SUCCESS:
-            await self._hook.on_complete(message, name, duration_ms=duration_ms)
+            await self._hook.on_complete(delivery, name, duration_ms=duration_ms)
         elif status is EventStatus.RETRYING:
-            await self._hook.on_retry(message, name, errors=[error] if error else [])
+            await self._hook.on_retry(delivery, name, errors=[error] if error else [])
         elif status is EventStatus.DLQ:
-            await self._hook.on_dead_letter(message, name, error=error)
+            await self._hook.on_dead_letter(delivery, name, error=error)
         elif status is EventStatus.DUPLICATE:
-            await self._hook.on_duplicate(message, name)
+            await self._hook.on_duplicate(delivery, name)
         else:  # FAILED
-            await self._hook.on_failure(message, name, error or _UnspecifiedFailure())
+            await self._hook.on_failure(delivery, name, error or _UnspecifiedFailure())
 
 
 class ConsumerObserver:
@@ -270,7 +293,7 @@ class ConsumerObserver:
             (e.g. ``orders-worker``). Also the control-plane identity.
         broker: Transport label (``kafka``, ``rabbitmq``, ``sqs``, …) — pure
             data on the envelope; adding a broker needs no new code here.
-        observatory_url: Base URL of the Midil Observatory. Builds the HTTP
+        base_url: Base URL of the Midil Observatory. Builds the HTTP
             telemetry sink and the control source. Mutually exclusive with
             ``sink``.
         sink: A pre-built :class:`TelemetrySink` for custom transports/auth.
@@ -294,7 +317,7 @@ class ConsumerObserver:
         *,
         consumer: str,
         broker: str,
-        observatory_url: Optional[str] = None,
+        base_url: Optional[str] = None,
         sink: Optional[TelemetrySink] = None,
         api_key: Optional[str] = None,
         source_service: Optional[str] = None,
@@ -302,19 +325,15 @@ class ConsumerObserver:
         include_payload: bool = True,
         control: Optional[ControlSource] = None,
     ) -> None:
-        if (sink is None) == (observatory_url is None):
-            raise ValueError("provide exactly one of observatory_url or sink")
-        if api_key is not None and observatory_url is None:
+        if (sink is None) == (base_url is None):
+            raise ValueError("provide exactly one of base_url or sink")
+        if api_key is not None and base_url is None:
             raise ValueError(
-                "api_key applies only with observatory_url — configure your "
+                "api_key applies only with base_url — configure your "
                 "sink/control source directly instead"
             )
         if sink is None:
-            # Local import: the HTTP sink lazily requires httpx; keep this module
-            # importable without the optional http dependency.
-            from pymidil.event.observability.sinks.http import HttpTelemetrySink
-
-            sink = HttpTelemetrySink(observatory_url, api_key=api_key)  # type: ignore[arg-type]
+            sink = HttpTelemetrySink(base_url, api_key=api_key)  # type: ignore[arg-type]
         self._sink = sink
         self._consumer = consumer
         self._classify: ExceptionClassifier = classify or default_classification
@@ -329,9 +348,9 @@ class ConsumerObserver:
         )
         if control is not None:
             self.control: ControlSource = control
-        elif observatory_url is not None:
+        elif base_url is not None:
             # The control poll is a data-plane surface — same key as the sink.
-            self.control = HttpControlSource(observatory_url, consumer, api_key=api_key)
+            self.control = HttpControlSource(base_url, consumer, api_key=api_key)
         else:
             self.control = NullControlSource()
 
@@ -360,22 +379,24 @@ class ConsumerObserver:
             occurred_at: Message timestamp; defaults to emission time.
         """
         carrier = _normalize_headers(headers)
-        metadata: Dict[str, Any] = dict(carrier)
-        metadata["event_type"] = event_type
-        if attempts is not None:
-            metadata["attempts"] = str(attempts)
-        message = ObservedMessage(
-            id=str(message_id),
-            body=payload,
-            metadata=metadata,
+        event = Event(
+            id=idempotency_key or str(message_id),
+            source=self._consumer,
+            type=event_type,
+            data=payload,
+            time=occurred_at or utcnow(),
             idempotency_key=idempotency_key,
-            timestamp=occurred_at,
+        )
+        delivery = ObservedDelivery(
+            event,
+            transport_id=str(message_id),
+            carrier=carrier,
+            attempts=attempts,
         )
         return Observation(
             hook=self._hook,
             consumer_name=self._consumer,
-            message=message,
-            carrier=carrier,
+            delivery=delivery,
             classify=self._classify,
         )
 
@@ -420,7 +441,9 @@ class PublishObservation:
         self._hook = hook
         self._producer_name = producer_name
         self._destination = destination
+        self._event_type = event_type
         self._payload = payload
+        self._idempotency_key = idempotency_key
         self._message_id: Optional[str] = None
         self._start = 0.0
         self._span_cm: Any = None
@@ -485,10 +508,21 @@ class PublishObservation:
         try:
             # Cancellation is the process stopping, not a publish outcome.
             if exc is None or isinstance(exc, Exception):
+                # Synthesize the Event this foreign send represents — the same
+                # shape a pymidil producer would publish — so the emitter reads
+                # identity off typed fields (dedup_key drives the failed-send id
+                # fallback). The team's wire headers still ride the actual
+                # message via ``self._headers``; the envelope carries the fact.
+                event = Event(
+                    id=self._idempotency_key or self._message_id or "unpublished",
+                    source=self._producer_name,
+                    type=self._event_type,
+                    data=self._payload,
+                    idempotency_key=self._idempotency_key,
+                )
                 record = PublishRecord(
                     destination=self._destination,
-                    payload=self._payload,
-                    metadata=self._headers,
+                    event=event,
                     message_id=self._message_id,
                     duration_ms=(time.monotonic() - self._start) * 1000.0,
                 )
@@ -519,7 +553,7 @@ class ProducerObserver:
         source_service: The publishing service as it should appear in the
             Observatory (e.g. ``checkout-gateway``).
         broker: Transport label (``kafka``, ``rabbitmq``, …) — pure data.
-        observatory_url: Base URL of the Midil Observatory. Mutually exclusive
+        base_url: Base URL of the Midil Observatory. Mutually exclusive
             with ``sink``.
         sink: A pre-built :class:`TelemetrySink` for custom transports/auth.
         include_payload: Attach published payloads to envelopes (default True).
@@ -530,21 +564,19 @@ class ProducerObserver:
         *,
         source_service: str,
         broker: str,
-        observatory_url: Optional[str] = None,
+        base_url: Optional[str] = None,
         sink: Optional[TelemetrySink] = None,
         api_key: Optional[str] = None,
         include_payload: bool = True,
     ) -> None:
-        if (sink is None) == (observatory_url is None):
-            raise ValueError("provide exactly one of observatory_url or sink")
-        if api_key is not None and observatory_url is None:
+        if (sink is None) == (base_url is None):
+            raise ValueError("provide exactly one of base_url or sink")
+        if api_key is not None and base_url is None:
             raise ValueError(
-                "api_key applies only with observatory_url — configure your sink directly"
+                "api_key applies only with base_url — configure your sink directly"
             )
         if sink is None:
-            from pymidil.event.observability.sinks.http import HttpTelemetrySink
-
-            sink = HttpTelemetrySink(observatory_url, api_key=api_key)  # type: ignore[arg-type]
+            sink = HttpTelemetrySink(base_url, api_key=api_key)  # type: ignore[arg-type]
         self._sink = sink
         self._source_service = source_service
         self._hook = TelemetryProducerHook(

@@ -9,9 +9,8 @@ from pymidil.event.producer.redis import RedisProducer, RedisProducerEventConfig
 from pymidil.event.consumer.strategies.base import (
     EventConsumer,
     BaseConsumerConfig,
-    ConsumerMessage,
 )
-from pymidil.event.message import Message
+from pymidil.event.core import Delivery, Event, NoAckDelivery
 from pymidil.event.consumer.strategies.pull import (
     PullEventConsumer,
     PullEventConsumerConfig,
@@ -57,7 +56,6 @@ from pymidil.event.observability import (
     ProducerObserver,
     EventKind,
     EventStatus,
-    MessageProtocol,
     ProducerHook,
     PublishRecord,
     TelemetryDispatchHook,
@@ -80,13 +78,14 @@ from pymidil.event.idempotency import (
 from pymidil.event.dlq import DlqRedriver, SQSDlqRedriver
 
 # Acknowledgement (transport-agnostic dispositions: ack / retry / dlq)
-from pymidil.event.acknowledgement import Acknowledger
 
 __all__ = [
     # event bus
     "EventBus",
-    # message
-    "Message",
+    # core model (Event + Delivery)
+    "Event",
+    "Delivery",
+    "NoAckDelivery",
     # Producers
     "SQSProducer",
     "SQSProducerEventConfig",
@@ -102,7 +101,6 @@ __all__ = [
     "PushEventConsumerConfig",
     "SQSConsumer",
     "SQSConsumerEventConfig",
-    "ConsumerMessage",
     # Subscribers and Middlewares
     "EventSubscriber",
     "FunctionSubscriber",
@@ -128,7 +126,6 @@ __all__ = [
     "DispatchHook",
     "ProducerHook",
     "PublishRecord",
-    "MessageProtocol",
     "TelemetryEnvelope",
     "EventStatus",
     "EventKind",
@@ -148,5 +145,4 @@ __all__ = [
     "DlqRedriver",
     "SQSDlqRedriver",
     # Acknowledgement
-    "Acknowledger",
 ]
