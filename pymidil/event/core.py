@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from datetime import datetime
-from typing import Any, Mapping, Optional
+from typing import Any, Literal, Mapping, Optional
 
 from loguru import logger
 from pydantic import BaseModel, Field
@@ -55,6 +55,7 @@ class Event(BaseModel):
     dataschema: Optional[str] = Field(
         default=None, description="Schema URI for ``data``"
     )
+    specversion: str = Field(default="1.0", description="Specification version")
 
     idempotency_key: Optional[str] = Field(default=None)
     extensions: dict[str, str] = Field(default_factory=dict)
@@ -70,22 +71,89 @@ class Event(BaseModel):
         return self.idempotency_key or self.id
 
 
-class Delivery(ABC):
+class Settlement(ABC):
+    """The single abstract write contract: physical settlement operations for
+    one delivery attempt, plus the declared fate of terminal failures.
+
+    The split of responsibilities: the *Delivery* reads (identity, attempt
+    count, trace carrier) and owns the settle-once latch; the *Settlement*
+    writes (the broker calls) and declares where terminal failures go. The
+    name follows the industry vocabulary — AMQP's *disposition* is the
+    settlement outcome/state (which is what ``Delivery.disposition`` records);
+    the object that performs the physical operations is the settlement.
+    """
+
+    @property
+    @abstractmethod
+    def terminal_action(self) -> Literal["dlq", "requeue", "drop"]:
+        """Where terminal failures go — declared, never guessed.
+
+        The dispatcher consults this to route a failure outcome (a
+        non-retryable error, or a spent retry budget) AND to emit telemetry
+        that matches the physical action: ``dlq`` diverts, ``requeue`` leaves
+        the event to redeliver (the broker's own redrive owns termination),
+        ``drop`` removes it (explicit data loss). Abstract so every settlement
+        must declare its fate at write time — no silent inheritance.
+        """
+
+    @abstractmethod
+    async def ack(self) -> None:
+        """Physically acknowledge (remove) the delivery at the broker."""
+
+    @abstractmethod
+    async def retry(self, delay: float) -> None:
+        """Physically schedule redelivery after ``delay`` seconds (policy-decided)."""
+
+    @abstractmethod
+    async def dlq(
+        self,
+        event: Event,
+        carrier: Mapping[str, str],
+        error: Optional[Exception] = None,
+    ) -> None:
+        """Physically divert to the dead-letter destination, preserving the
+        wire carrier so a later replay links back."""
+
+
+class NoSettlement(Settlement):
+    """The settlement of transports with no broker-side settlement (push,
+    observed): every write is a no-op, and the truthful fate of a terminal
+    failure is ``drop`` — the event is simply gone from this consumer's
+    perspective."""
+
+    @property
+    def terminal_action(self) -> Literal["dlq", "requeue", "drop"]:
+        return "drop"
+
+    async def ack(self) -> None:
+        return None
+
+    async def retry(self, delay: float) -> None:
+        return None
+
+    async def dlq(
+        self,
+        event: Event,
+        carrier: Mapping[str, str],
+        error: Optional[Exception] = None,
+    ) -> None:
+        return None
+
+
+class Delivery:
     """
     Represents a single attempt to deliver an Event over a transport.
 
-    The Delivery object encapsulates contextual metadata about a delivery attempt,
-    such as when it was received and the Event being delivered. It provides
-    transport-level settlement (ack/retry/dlq) semantics and trace carrier for
-    distributed tracing.
+    A Delivery READS: the event it carries, when it arrived, the transport's
+    id for this attempt, the attempt count, and the trace carrier — transports
+    subclass to override those reads. It never WRITES: the physical settlement
+    operations live on the :class:`Settlement` it composes, so there is exactly
+    one abstract write contract in the model.
 
     A delivery settles exactly once: the public verbs latch the first
     disposition and refuse later ones loudly (error log, no-op) — the physical
     disposition already happened, so a second one is always a bug. Settlement
-    is called by the dispatcher, which aggregates every subscriber's outcome;
-    transports implement the physical operations in ``_ack``/``_retry``/``_dlq``
-    and may compose those primitives internally (e.g. SQS dead-lettering sends
-    to the DLQ then deletes from the source).
+    is called by the dispatcher, which aggregates every subscriber's outcome.
 
     Attributes:
         event: The Event this delivery carries.
@@ -95,9 +163,16 @@ class Delivery(ABC):
     event: Event
     received_at: datetime
 
-    def __init__(self, event: Event, *, received_at: Optional[datetime] = None) -> None:
+    def __init__(
+        self,
+        event: Event,
+        settlement: Optional[Settlement] = None,
+        *,
+        received_at: Optional[datetime] = None,
+    ) -> None:
         self.event = event
         self.received_at = received_at or utcnow()
+        self._settlement: Settlement = settlement or NoSettlement()
         self._disposition: Optional[str] = None
 
     @property
@@ -126,17 +201,28 @@ class Delivery(ABC):
     async def ack(self) -> None:
         """Acknowledge successful handling of this delivery (first-wins latch)."""
         if self._claim("ack"):
-            await self._ack()
+            await self._settlement.ack()
 
-    async def retry(self) -> None:
-        """Make this event available for redelivery (first-wins latch)."""
+    async def retry(self, delay: float = 0.0) -> None:
+        """Make this event available for redelivery (first-wins latch).
+
+        ``delay`` is decided by the dispatcher's retry policy; the settlement
+        enacts it (SQS: visibility timeout) or ignores it if the transport
+        cannot delay.
+        """
         if self._claim("retry"):
-            await self._retry()
+            await self._settlement.retry(delay)
 
     async def dlq(self, error: Optional[Exception] = None) -> None:
         """Divert this event to a dead-letter destination (first-wins latch)."""
         if self._claim("dlq"):
-            await self._dlq(error)
+            await self._settlement.dlq(self.event, self.carrier(), error)
+
+    @property
+    def terminal_action(self) -> Literal["dlq", "requeue", "drop"]:
+        """Where terminal failures go — forwarded from the settlement, which
+        declares it."""
+        return self._settlement.terminal_action
 
     @property
     def transport_id(self) -> str:
@@ -157,31 +243,6 @@ class Delivery(ABC):
         """
         return 1
 
-    @abstractmethod
-    async def _ack(self) -> None:
-        """
-        Physical acknowledgment — transport-specific.
-
-        Never called directly; the latched :meth:`ack` is the entrypoint.
-        Transports may call this primitive when composing dispositions.
-        """
-
-    @abstractmethod
-    async def _retry(self) -> None:
-        """
-        Physical redelivery request — transport-specific.
-
-        Never called directly; the latched :meth:`retry` is the entrypoint.
-        """
-
-    @abstractmethod
-    async def _dlq(self, error: Optional[Exception] = None) -> None:
-        """
-        Physical dead-lettering — transport-specific.
-
-        Never called directly; the latched :meth:`dlq` is the entrypoint.
-        """
-
     def carrier(self) -> Mapping[str, str]:
         """
         Returns a mapping of trace context headers for OpenTelemetry extraction.
@@ -192,21 +253,5 @@ class Delivery(ABC):
 
 
 class NoAckDelivery(Delivery):
-    """
-    Delivery for transports that do not support broker-side settlement.
-
-    This delivery implementation is for push transports or simple brokerless
-    integrations (e.g., webhooks, WebSocket) where ack/retry/dlq operations are no-ops.
-    """
-
-    async def _ack(self) -> None:
-        """No-op: No acknowledgment necessary for this delivery type."""
-        return None
-
-    async def _retry(self) -> None:
-        """No-op: Retry is not supported for this delivery type."""
-        return None
-
-    async def _dlq(self, error: Optional[Exception] = None) -> None:
-        """No-op: No dead-letter queue for this delivery type."""
-        return None
+    """A semantic name for push/observed deliveries — a plain :class:`Delivery`
+    with the default :class:`NoSettlement` (all writes no-op, fate ``drop``)."""

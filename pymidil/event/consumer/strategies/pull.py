@@ -5,10 +5,8 @@ from pymidil.event.control import (
     ControlState,
     NullControlSource,
 )
-from pymidil.event.exceptions import (
-    ConsumerCrashError,
-    ConsumerStopError,
-)
+from pymidil.event.exceptions import ConsumerStopError
+from pymidil.event.retry import RetryConfig
 from loguru import logger
 import asyncio
 from typing import Any, Optional
@@ -20,6 +18,10 @@ from abc import abstractmethod
 class PullEventConsumerConfig(BaseConsumerConfig):
     poll_interval: float = Field(
         default=0.1, description="Interval between polls if no messages", ge=0.0
+    )
+    retry: RetryConfig = Field(
+        default_factory=RetryConfig,
+        description="Bounded-redelivery policy: attempt budget + delay curve",
     )
 
 
@@ -47,7 +49,7 @@ class PullEventConsumer(EventConsumer):
         *,
         control: Optional[ControlSource] = None,
     ):
-        super().__init__(config)
+        super().__init__(config)  # arms + validates the retry policy
         self._config: PullEventConsumerConfig = config
         self._running: bool = False
         self._loop_task: asyncio.Task[Any] | None = None
@@ -97,10 +99,14 @@ class PullEventConsumer(EventConsumer):
             return
         exc = task.exception()
         if exc:
-            logger.error(
-                f"Consumer {self.__class__.__name__} terminated with crash: {exc}"
+            # Raising inside a done-callback is swallowed by the event loop —
+            # record the death observably instead: mark not-running (health
+            # checks and start() see it) and log at critical.
+            self._running = False
+            logger.critical(
+                f"Consumer {self.__class__.__name__} poll loop DIED: {exc!r} — "
+                f"consumption has stopped; restart the consumer"
             )
-            raise ConsumerCrashError(f"Consumer crashed: {exc}")
 
     async def stop(self) -> None:
         if not self._running:

@@ -15,6 +15,7 @@ from pymidil.event.consumer.strategies.pull import (
     PullEventConsumer,
     PullEventConsumerConfig,
 )
+from pymidil.event.retry import RetryConfig
 from pymidil.event.control import (
     Control,
     ControlState,
@@ -441,9 +442,12 @@ class _DummyPull(PullEventConsumer):
         pass
 
 
+_NO_BUDGET = RetryConfig(max_attempts=None)  # dummy transport can't count attempts
+
+
 def _pull(state: ControlState, rate: float | None = None) -> _DummyPull:
     return _DummyPull(
-        PullEventConsumerConfig(type="dummy", poll_interval=0.01),
+        PullEventConsumerConfig(type="dummy", poll_interval=0.01, retry=_NO_BUDGET),
         control=_FixedControl(Control(state, throttle_per_sec=rate)),
     )
 

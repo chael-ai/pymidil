@@ -1,7 +1,7 @@
 import pytest
 from pymidil.settings import MidilSettings, EventSettingsError
 from pymidil.event.config import EventConfig, EventConsumerType
-from pymidil.event.consumer.sqs import SQSConsumerEventConfig
+from pymidil.brokers.sqs.consumer import SQSConsumerEventConfig
 from pymidil.event.consumer.webhook import WebhookConsumerEventConfig
 
 
@@ -16,7 +16,9 @@ class TestNamedConsumers:
         """Test getting a specific consumer by name."""
         settings = _settings_with_consumers(
             booking_queue=SQSConsumerEventConfig(
-                queue_url="https://sqs.us-east-1.amazonaws.com/123456789/booking-queue"
+                no_dlq="requeue",
+                retry={"max_attempts": None},
+                queue_url="https://sqs.us-east-1.amazonaws.com/123456789/booking-queue",
             ),
             payment_webhook=WebhookConsumerEventConfig(endpoint="/webhook/payments"),
         )
@@ -36,7 +38,9 @@ class TestNamedConsumers:
         """Test error when consumer name is not found."""
         settings = _settings_with_consumers(
             booking_queue=SQSConsumerEventConfig(
-                queue_url="https://sqs.us-east-1.amazonaws.com/123456789/booking-queue"
+                no_dlq="requeue",
+                retry={"max_attempts": None},
+                queue_url="https://sqs.us-east-1.amazonaws.com/123456789/booking-queue",
             ),
         )
 
@@ -49,11 +53,15 @@ class TestNamedConsumers:
         """Test getting consumers by type (SQS)."""
         settings = _settings_with_consumers(
             booking_queue=SQSConsumerEventConfig(
-                queue_url="https://sqs.us-east-1.amazonaws.com/123456789/booking-queue"
+                no_dlq="requeue",
+                retry={"max_attempts": None},
+                queue_url="https://sqs.us-east-1.amazonaws.com/123456789/booking-queue",
             ),
             payment_webhook=WebhookConsumerEventConfig(endpoint="/webhook/payments"),
             notification_queue=SQSConsumerEventConfig(
-                queue_url="https://sqs.us-east-1.amazonaws.com/123456789/notification-queue"
+                no_dlq="requeue",
+                retry={"max_attempts": None},
+                queue_url="https://sqs.us-east-1.amazonaws.com/123456789/notification-queue",
             ),
         )
 
@@ -69,7 +77,9 @@ class TestNamedConsumers:
         """Test getting consumers by type (Webhook)."""
         settings = _settings_with_consumers(
             booking_queue=SQSConsumerEventConfig(
-                queue_url="https://sqs.us-east-1.amazonaws.com/123456789/booking-queue"
+                no_dlq="requeue",
+                retry={"max_attempts": None},
+                queue_url="https://sqs.us-east-1.amazonaws.com/123456789/booking-queue",
             ),
             payment_webhook=WebhookConsumerEventConfig(endpoint="/webhook/payments"),
             notification_webhook=WebhookConsumerEventConfig(
@@ -91,7 +101,9 @@ class TestNamedConsumers:
         """Test error when no consumers of specified type are found."""
         settings = _settings_with_consumers(
             booking_queue=SQSConsumerEventConfig(
-                queue_url="https://sqs.us-east-1.amazonaws.com/123456789/booking-queue"
+                no_dlq="requeue",
+                retry={"max_attempts": None},
+                queue_url="https://sqs.us-east-1.amazonaws.com/123456789/booking-queue",
             ),
         )
 

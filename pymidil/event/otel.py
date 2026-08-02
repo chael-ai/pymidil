@@ -23,7 +23,7 @@ from opentelemetry import trace
 from opentelemetry.context import Context
 from opentelemetry.propagate import extract as _extract
 from opentelemetry.propagate import inject as _inject
-from opentelemetry.trace import Link, Span, SpanContext, SpanKind, Tracer
+from opentelemetry.trace import Span, SpanContext, SpanKind, Tracer
 
 from opentelemetry.sdk.resources import Resource
 from opentelemetry.sdk.trace import TracerProvider
@@ -133,32 +133,6 @@ def consumer_span(
         if parent_span_id is None:
             span.set_attribute(DISCONTINUITY_ATTR, True)
         yield span, parent_span_id
-
-
-@contextmanager
-def replay_span(
-    original_carrier: Mapping[str, str], destination: str, *, system: str = "event"
-) -> Iterator[Tuple[Span, SpanContext]]:
-    """A PRODUCER span for a DLQ replay, linked to the original message's span.
-
-    A replay is a distinct operation (operator-triggered, temporally separate), so
-    it starts its **own** trace rather than grafting onto the original. An OTel
-    **Link** back to the original span plus ``replayed_from.*`` attributes record
-    the causal relationship explicitly. Yields ``(span, original_span_context)``;
-    the caller injects this span's context into the re-sent carrier.
-    """
-    original_ctx = extract_context(original_carrier)
-    original_sc = trace.get_current_span(original_ctx).get_span_context()
-    links = [Link(original_sc)] if original_sc.is_valid else []
-    with get_tracer().start_as_current_span(
-        f"replay {destination}", kind=SpanKind.PRODUCER, links=links
-    ) as span:
-        span.set_attribute("messaging.system", system)
-        span.set_attribute("messaging.operation", "replay")
-        if original_sc.is_valid:
-            span.set_attribute("replayed_from.trace_id", _hex(original_sc.trace_id, 32))
-            span.set_attribute("replayed_from.span_id", _hex(original_sc.span_id, 16))
-        yield span, original_sc
 
 
 def configure_tracing(

@@ -7,7 +7,7 @@ from threading import Lock
 from typing import Annotated, Any, List, Optional, Set
 
 from loguru import logger
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 from dataclasses import dataclass
 
 from pymidil.event.core import Delivery, Event
@@ -15,10 +15,15 @@ from pymidil.event.exceptions import RetryableEventError
 from pymidil.event.idempotency.policy import IdempotencyPolicy
 from pymidil.event.observability.hooks import DispatchHook
 from pymidil.event.otel import consumer_span
+from pymidil.event.retry import RetryConfig, TransportCapabilities, validate_policy
 from pymidil.event.subscriber.base import EventSubscriber
 
 
 class BaseConsumerConfig(BaseModel):
+    # Unknown keys refuse loudly: a stale config (e.g. the pre-retry-policy
+    # backoff_base_delay) must fail at parse, not be silently dropped.
+    model_config = ConfigDict(extra="forbid")
+
     type: Annotated[
         str,
         Field(
@@ -74,6 +79,22 @@ class EventConsumer(ABC):
         self._subscription_lock = Lock()
         self._dispatch_hooks: List[DispatchHook] = []
         self._idempotency: Optional[IdempotencyPolicy] = idempotency
+        # The retry policy, when the config carries one (pull transports).
+        # The dispatcher DECIDES from it (budget + delay); transports enact.
+        retry: Optional[RetryConfig] = getattr(config, "retry", None)
+        if retry is not None:
+            # Validate where the policy is ARMED, not one level below — any
+            # config that carries a retry policy gets checked against what
+            # this transport can physically do.
+            validate_policy(retry, self.capabilities, config.type)
+        self._retry_config = retry
+        self._retry_backoff = retry.build_backoff() if retry is not None else None
+
+    @property
+    def capabilities(self) -> TransportCapabilities:
+        """What this consumer's transport can physically do. Conservative by
+        default; transports override to claim more (and are validated on it)."""
+        return TransportCapabilities()
 
     @property
     def name(self) -> str:
@@ -165,20 +186,20 @@ class EventConsumer(ABC):
 
         event = delivery.event
         key = self._dedup_key(event)
-        if key is not None:
-            policy = self._idempotency
-            assert policy is not None  # key only resolves when a policy is configured
-            if not await policy.store.claim(key, policy.ttl_seconds):
-                logger.debug(
-                    f"{self.name} duplicate {event.id} (key={key}) short-circuited"
-                )
-                await self._safe_notify_hooks("on_duplicate", delivery)
-                await delivery.ack()
-                return
-
         start = time.monotonic()
 
         try:
+            if key is not None:
+                policy = self._idempotency
+                assert policy is not None  # key resolves only with a policy
+                if not await policy.store.claim(key, policy.ttl_seconds):
+                    logger.debug(
+                        f"{self.name} duplicate {event.id} (key={key}) short-circuited"
+                    )
+                    await self._safe_notify_hooks("on_duplicate", delivery)
+                    await delivery.ack()
+                    return
+
             await self._safe_notify_hooks("on_receive", delivery)
 
             if not self._subscribers:
@@ -193,6 +214,7 @@ class EventConsumer(ABC):
             duration_ms = (time.monotonic() - start) * 1000
 
             outcome = self._determine_outcome(subscriber_results, duration_ms, event)
+            outcome = self._bound_retries(outcome, delivery)
 
             # Keep the claim only for a successful outcome; release on
             # retry/failure so a redelivery is free to re-process.
@@ -283,6 +305,33 @@ class EventConsumer(ABC):
             duration_ms=duration_ms,
         )
 
+    def _bound_retries(
+        self, outcome: DispatchOutcome, delivery: Delivery
+    ) -> DispatchOutcome:
+        """Enforce the retry budget: a retryable outcome whose attempts are
+        spent becomes terminal, with a reason that says so. Attempt counting is
+        the transport's (SQS: ApproximateReceiveCount — a ceiling on
+        *deliveries*, not handler runs)."""
+        if not isinstance(outcome, RetryOutcome) or self._retry_config is None:
+            return outcome
+        budget = self._retry_config.max_attempts
+        if budget is None or delivery.retry_count < budget:
+            return outcome
+        return FailureOutcome(
+            exception_group=ExceptionGroup(
+                f"retry budget exhausted after {delivery.retry_count} "
+                f"attempts (max_attempts={budget})",
+                outcome.errors,
+            )
+        )
+
+    def _retry_delay(self, delivery: Delivery) -> float:
+        """The policy-decided redelivery delay for this attempt (0.0 without a
+        policy — transports that cannot delay ignore it anyway)."""
+        if self._retry_backoff is None:
+            return 0.0
+        return self._retry_backoff.next_delay(delivery.retry_count)
+
     async def _handle_outcome(
         self,
         outcome: DispatchOutcome,
@@ -293,14 +342,39 @@ class EventConsumer(ABC):
             case RetryOutcome(errors=errors):
                 logger.debug(f"{self.name} event {event.id} will be retried")
                 await self._safe_notify_hooks("on_retry", delivery, errors=errors)
-                await delivery.retry()
+                await delivery.retry(self._retry_delay(delivery))
 
             case FailureOutcome(exception_group=group):
-                logger.error(f"{self.name} event {event.id} failed: {group}")
-                # Non-retryable failure → dead-letter (diverted for inspection),
-                # reported once via on_dead_letter.
-                await self._safe_notify_hooks("on_dead_letter", delivery, error=group)
-                await delivery.dlq(group)
+                # Terminal failure → the consumer's DECLARED fate, with
+                # telemetry that matches the physical action (never a DLQ
+                # status for a message that is not physically diverted).
+                match delivery.terminal_action:
+                    case "dlq":
+                        logger.error(f"{self.name} event {event.id} failed: {group}")
+                        await self._safe_notify_hooks(
+                            "on_dead_letter", delivery, error=group
+                        )
+                        await delivery.dlq(group)
+                    case "requeue":
+                        logger.error(
+                            f"{self.name} event {event.id} failed terminally; "
+                            f"requeueing per declared fate (broker redrive owns "
+                            f"termination): {group}"
+                        )
+                        await self._safe_notify_hooks(
+                            "on_retry", delivery, errors=[group]
+                        )
+                        await delivery.retry(self._retry_delay(delivery))
+                    case "drop":
+                        logger.error(
+                            f"{self.name} event {event.id} failed terminally; "
+                            f"dropping per declared fate (explicit data "
+                            f"loss): {group}"
+                        )
+                        await self._safe_notify_hooks(
+                            "on_failure", delivery, error=group
+                        )
+                        await delivery.ack()
 
             case SuccessOutcome(duration_ms=duration_ms):
                 await self._safe_notify_hooks(

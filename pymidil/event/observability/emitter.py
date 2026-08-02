@@ -61,7 +61,10 @@ def describe_error(
         return None, None
     if isinstance(error, BaseExceptionGroup):
         inner = error.exceptions[0] if error.exceptions else None
-        reason = "; ".join(str(e) for e in error.exceptions) or str(error)
+        joined = "; ".join(str(e) for e in error.exceptions)
+        # The group's own message carries dispatch-level context (e.g. "retry
+        # budget exhausted after N attempts") — it must reach telemetry.
+        reason = f"{error.message}: {joined}" if joined else error.message
         klass = type(inner).__name__ if inner else type(error).__name__
         return reason, klass
     return str(error), type(error).__name__

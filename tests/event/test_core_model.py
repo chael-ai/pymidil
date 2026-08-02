@@ -13,7 +13,28 @@ from typing import Optional
 
 import pytest
 
-from pymidil.event.core import Event, Delivery
+from pymidil.event.core import Event, Delivery, Settlement
+
+
+class _Recorder(Settlement):
+    """Writes recorded onto the owning FakeDelivery — composition."""
+
+    def __init__(self, owner) -> None:
+        self._owner = owner
+
+    @property
+    def terminal_action(self):
+        return "dlq"
+
+    async def ack(self) -> None:
+        self._owner.acked = True
+
+    async def retry(self, delay: float) -> None:
+        self._owner.retried = True
+
+    async def dlq(self, event, carrier, error=None) -> None:
+        self._owner.dead_lettered = error or RuntimeError("no error given")
+
 
 pytestmark = pytest.mark.anyio
 
@@ -27,7 +48,7 @@ class FakeDelivery(Delivery):
     """A test double transport — records dispositions, no broker."""
 
     def __init__(self, event: Event, *, receive_count: int = 1) -> None:
-        super().__init__(event)
+        super().__init__(event, _Recorder(self))
         self._receive_count = receive_count
         self.acked = self.retried = False
         self.dead_lettered: Optional[BaseException] = None
@@ -35,15 +56,6 @@ class FakeDelivery(Delivery):
     @property
     def retry_count(self) -> int:
         return self._receive_count
-
-    async def _ack(self) -> None:
-        self.acked = True
-
-    async def _retry(self) -> None:
-        self.retried = True
-
-    async def _dlq(self, error: Optional[Exception] = None) -> None:
-        self.dead_lettered = error or RuntimeError("no error given")
 
 
 def _event(**over) -> Event:

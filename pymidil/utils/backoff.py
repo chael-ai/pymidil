@@ -10,6 +10,13 @@ class BackoffStrategy(abc.ABC):
         raise NotImplementedError
 
 
+# 2**_MAX_EXPONENT already dwarfs any real cap; clamping the exponent keeps
+# base * 2**n inside float range for arbitrarily large attempt counts
+# (unbounded-retry consumers reach attempt numbers where 2**(attempt-1)
+# overflows float conversion).
+_MAX_EXPONENT = 63
+
+
 class ExponentialBackoff(BackoffStrategy):
     """Exponential backoff without jitter"""
 
@@ -18,7 +25,8 @@ class ExponentialBackoff(BackoffStrategy):
         self.max_delay = max_delay
 
     def next_delay(self, attempt: int) -> float:
-        return min(self.base_delay * (2 ** (attempt - 1)), self.max_delay)
+        exponent = min(max(attempt - 1, 0), _MAX_EXPONENT)
+        return min(self.base_delay * (2**exponent), self.max_delay)
 
 
 class ExponentialBackoffWithJitter(BackoffStrategy):
@@ -30,6 +38,9 @@ class ExponentialBackoffWithJitter(BackoffStrategy):
         self.jitter = jitter
 
     def next_delay(self, attempt: int) -> float:
-        delay = min(self.cap, self.base * (2 ** (attempt - 1)))
+        exponent = min(max(attempt - 1, 0), _MAX_EXPONENT)
+        delay = min(self.cap, self.base * (2**exponent))
         jitter_amt = (random.random() * 2 - 1) * self.jitter * delay
-        return max(0.0, delay + jitter_amt)
+        # Jitter must stay inside the promised curve: never above the cap,
+        # never negative.
+        return max(0.0, min(delay + jitter_amt, self.cap))

@@ -91,6 +91,67 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   constants now live in `wire.py` beside the mapping that is their only
   consumer, and the `MessageBody` payload alias retires with the old
   `_publish(payload, …)` seam.
+- **Retry policy: bounded by default, declared fates, no silent fallbacks.**
+  Pull consumers carry a `RetryConfig` (`max_attempts=5`, jittered 5→300s
+  exponential backoff; `max_attempts=None` is the explicit unbounded opt-in
+  for consumers that legitimately wait on out-of-order events). The dispatcher
+  DECIDES — it bounds the budget (`retry budget exhausted after N attempts`)
+  and computes each delay — and the transport ENACTS (`delivery.retry(delay)`;
+  SQS via visibility timeout). An SQS consumer must DECLARE its terminal fate:
+  `dlq_url` XOR `no_dlq="requeue"|"drop"` — construction refuses otherwise
+  with a teaching message; the silent no-DLQ fallback (infinite redelivery
+  reported as DLQ) is deleted. Terminal failures route by the declared fate
+  with telemetry that matches the physical action (requeue reports RETRYING,
+  never a fake DLQ). Policies are validated against `TransportCapabilities`
+  at construction — a bounded budget on a transport that cannot count
+  attempts refuses loudly instead of silently never triggering. The SQS
+  `backoff_base_delay`/`backoff_max_delay` config fields are absorbed into
+  `retry.*`. Note: SQS attempt counting is `ApproximateReceiveCount` — a
+  ceiling on *deliveries*, not handler runs; a queue redrive `maxReceiveCount`
+  lower than `max_attempts` diverts broker-side first.
+- **The DLQ redriver is removed** (`pymidil/event/dlq/`, `SQSDlqRedriver`,
+  `otel.replay_span`). It was speculative surface for the replay feature the
+  console lists as coming-soon — nothing imported it outside its own test —
+  and it carried a confirmed defect: replaying dropped the original wire
+  attributes, so a redriven message came back with a new id, `type="unknown"`,
+  and reset dedup identity. When replay ships, the reimplementation must
+  forward the original producer-namespace attributes (identity + trace) and
+  only add/refresh `replayed_from`; the `replayed_from` wire/envelope contract
+  stays in place for it. Dead-lettering itself (the divert side: declared
+  fates, `SQSSettlement.dlq`, DLQ telemetry) is unaffected.
+- **Dispatch failures are contained, never escalated blind.** A
+  dispatcher-level error (idempotency-store outage, malformed wire) no longer
+  hard-dead-letters the message — the outcome is unknown, so the message is
+  left unsettled for redelivery — and no longer aborts the batch: one bad
+  message cannot cancel sibling dispatches mid-handler (burning their retry
+  budgets) or silently kill the poll loop. A poll-loop death is now recorded
+  observably (`_running=False` + critical log) instead of a swallowed raise in
+  a done-callback. SQS system attributes and producer message attributes are
+  separate namespaces end-to-end: producers can no longer shadow
+  `ApproximateReceiveCount`/`SentTimestamp`, and a DLQ divert forwards only
+  the producer namespace (identity + trace), never stale broker counters.
+  Config coherence: `no_dlq="requeue"` with a finite `max_attempts` is refused
+  (the budget could terminate nothing); stale config keys now fail loudly
+  (`extra="forbid"`); the exhaustion reason ("retry budget exhausted after N
+  attempts") reaches telemetry envelopes; exponential backoff no longer
+  overflows at high attempt counts on unbounded consumers, and jitter can no
+  longer exceed the configured cap.
+- **Transports live under `pymidil.brokers.<name>`.** SQS moved from
+  `event/{consumer,producer}/sqs.py` to `brokers/sqs/` (FastStream/Spring-style
+  transport-first packaging — adding a broker touches one new package). Inside,
+  the roles split: `SQSDelivery` *reads* the wire (identity, attempt count,
+  trace carrier) and owns the settle-once latch; `SQSSettlement` *writes* (the
+  physical broker calls). `Settlement` is the new core seam — named for the
+  industry vocabulary (AMQP's *disposition* is the settlement outcome/state,
+  which `Delivery.disposition` records; the executor is the settlement).
+  Casing standardized (`SQSDelivery`); `Event` gains CloudEvents `specversion`.
+  The model has exactly ONE abstract write contract: `Settlement` owns the
+  physical verbs AND the declared terminal fate; `Delivery` is CONCRETE —
+  identity, reads, and the settle-once latch, composing a `Settlement`
+  (default `NoSettlement`: no-op writes, truthful `drop` fate). Transport
+  delivery subclasses exist only for genuinely transport-specific READS;
+  the `_ack/_retry/_dlq` template-method layer is deleted. Test doubles
+  compose recording settlements — the same seam real transports use.
 - **The dispatcher owns settlement — exclusively.** Handlers never see the
   `Delivery` (there is no context object at all — see the handler-contract
   bullet above): one delivery fans out to many concurrent subscribers, so its

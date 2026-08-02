@@ -50,15 +50,6 @@ class FakeDelivery(Delivery):
     def retry_count(self) -> int:
         return self._retry_count
 
-    async def _ack(self) -> None:
-        ...
-
-    async def _retry(self) -> None:
-        ...
-
-    async def _dlq(self, error: Optional[Exception] = None) -> None:
-        ...
-
 
 def _event(**overrides) -> Event:
     base = dict(

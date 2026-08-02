@@ -1,7 +1,7 @@
 from pymidil.event.event_bus import EventBus
 
 # Producers
-from pymidil.event.producer.sqs import SQSProducer, SQSProducerEventConfig
+from pymidil.brokers.sqs import SQSProducer, SQSProducerEventConfig
 from pymidil.event.producer.base import BaseProducerConfig
 from pymidil.event.producer.redis import RedisProducer, RedisProducerEventConfig
 
@@ -10,7 +10,8 @@ from pymidil.event.consumer.strategies.base import (
     EventConsumer,
     BaseConsumerConfig,
 )
-from pymidil.event.core import Delivery, Event, NoAckDelivery
+from pymidil.event.core import Delivery, Event, NoAckDelivery, NoSettlement, Settlement
+from pymidil.event.retry import RetryConfig, RetryPolicyError, TransportCapabilities
 from pymidil.event.consumer.strategies.pull import (
     PullEventConsumer,
     PullEventConsumerConfig,
@@ -19,7 +20,7 @@ from pymidil.event.consumer.strategies.push import (
     PushEventConsumer,
     PushEventConsumerConfig,
 )
-from pymidil.event.consumer.sqs import SQSConsumer, SQSConsumerEventConfig
+from pymidil.brokers.sqs import SQSConsumer, SQSConsumerEventConfig
 
 # Subscribers and Middlewares
 from pymidil.event.subscriber.base import (
@@ -75,7 +76,6 @@ from pymidil.event.idempotency import (
 )
 
 # Dead-letter operations (A4)
-from pymidil.event.dlq import DlqRedriver, SQSDlqRedriver
 
 # Acknowledgement (transport-agnostic dispositions: ack / retry / dlq)
 
@@ -85,6 +85,11 @@ __all__ = [
     # core model (Event + Delivery)
     "Event",
     "Delivery",
+    "Settlement",
+    "NoSettlement",
+    "RetryConfig",
+    "RetryPolicyError",
+    "TransportCapabilities",
     "NoAckDelivery",
     # Producers
     "SQSProducer",
@@ -142,7 +147,5 @@ __all__ = [
     "RedisIdempotencyStore",
     "IdempotencyPolicy",
     # Dead-letter operations (A4)
-    "DlqRedriver",
-    "SQSDlqRedriver",
     # Acknowledgement
 ]

@@ -9,7 +9,7 @@ from pymidil.event.core import Event, NoAckDelivery
 from pymidil.event.observability import EventStatus, TelemetryDispatchHook
 from pymidil.event.observability.sinks.base import TelemetrySink
 from pymidil.event.otel import current_span_ids, inject_headers, producer_span
-from pymidil.event.producer.sqs import SQSProducer, SQSProducerEventConfig
+from pymidil.brokers.sqs.producer import SQSProducer, SQSProducerEventConfig
 from pymidil.event.subscriber.base import FunctionSubscriber
 
 pytestmark = pytest.mark.anyio
