@@ -19,9 +19,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     defaults to `id` (an explicit `idempotency_key` overrides).
   - **`Delivery`** — one transport attempt (a plain class, not a model — it
     holds a live ack handle). Owns the disposition (`ack`/`retry`/`dlq`) and
-    `carrier()`; `SqsDelivery`/`WebhookDelivery`/`WebSocketDelivery`/
-    `ObservedDelivery` are the concrete transports. `NoAckDelivery` is the
-    no-settlement base for push/observed transports.
+    `carrier()`; `SQSDelivery`/`WebhookDelivery`/`ObservedDelivery` are the
+    concrete deliveries. `NoAckDelivery` is the no-settlement base for
+    push/observed transports.
   Transport specifics (the SQS `{"StringValue"}` envelope, `ApproximateReceiveCount`,
   region-from-ARN) are now quarantined inside `SqsDelivery` — the rest of the
   SDK never peels a broker shape. The emitter reads `delivery.event.*` off
@@ -109,6 +109,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `retry.*`. Note: SQS attempt counting is `ApproximateReceiveCount` — a
   ceiling on *deliveries*, not handler runs; a queue redrive `maxReceiveCount`
   lower than `max_attempts` diverts broker-side first.
+- **The WebSocket transport is removed** (`transports/websocket/`). It failed
+  both tests of the transport doctrine: no architectural role (services event
+  through brokers; third parties through webhooks; realtime UI belongs to the
+  console↔API side, not the SDK) and no settlement contract (a frame has no
+  per-message response channel, so a failed delivery has no honest disposition
+  — a transport that structurally cannot report truth contradicts the
+  product's core promise). It was also unreachable through the platform
+  (never registered in the bus factory or declarative config), off the wire
+  contract, and consumed by nothing. Webhook stays: foreign-producer ingress
+  with a real sender-mediated settlement contract (HTTP status = disposition).
 - **The DLQ redriver is removed** (`pymidil/event/dlq/`, `SQSDlqRedriver`,
   `otel.replay_span`). It was speculative surface for the replay feature the
   console lists as coming-soon — nothing imported it outside its own test —

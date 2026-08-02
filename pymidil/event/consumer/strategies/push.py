@@ -17,7 +17,6 @@ class PushEventConsumer(EventConsumer):
         Return the framework-specific entrypoint object.
         Examples:
             - FastAPI app
-            - WebSocket server instance
             - gRPC server
         """
         raise NotImplementedError(

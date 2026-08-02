@@ -7,8 +7,6 @@ headers carry the W3C trace context.
 
 from __future__ import annotations
 
-import hashlib
-import json
 from typing import Any, Dict, Literal, Mapping
 
 from fastapi import APIRouter, HTTPException, Request
@@ -60,11 +58,11 @@ class WebhookConsumer(PushEventConsumer):
 
     def _to_event(self, data: Any, headers: Mapping[str, str]) -> Event:
         return Event(
-            id=headers.get(IDEMPOTENCY_KEY_FIELD) or self._hash_body(data),
-            source=headers.get("source") or "webhook",
-            type=headers.get(EVENT_TYPE_FIELD) or "unknown",
+            id=headers[IDEMPOTENCY_KEY_FIELD],
+            source=headers["source"] or "webhook",
+            type=headers[EVENT_TYPE_FIELD],
             data=data,
-            idempotency_key=headers.get(IDEMPOTENCY_KEY_FIELD),
+            idempotency_key=headers[IDEMPOTENCY_KEY_FIELD],
         )
 
     async def _handler(self, request: Request) -> Dict[str, Any]:
@@ -77,10 +75,6 @@ class WebhookConsumer(PushEventConsumer):
         except Exception as e:
             logger.exception("Webhook event handling failed")
             raise HTTPException(status_code=400, detail=str(e))
-
-    def _hash_body(self, body: Any) -> str:
-        body_str = json.dumps(body, sort_keys=True, separators=(",", ":"))
-        return hashlib.sha256(body_str.encode("utf-8")).hexdigest()
 
     async def start(self) -> None:
         logger.info(f"Webhook consumer ready at {self._config.endpoint}")
