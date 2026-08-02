@@ -5,7 +5,7 @@ from pymidil.event.control import (
     ControlState,
     NullControlSource,
 )
-from pymidil.event.exceptions import ConsumerStopError
+from pymidil.exceptions import ConsumerStopError
 from pymidil.event.retry import RetryConfig
 from loguru import logger
 import asyncio
@@ -88,6 +88,12 @@ class PullEventConsumer(EventConsumer):
             logger.warning(f"Consumer {self.__class__.__name__} already running")
             return
 
+        if not self._subscribers:
+            logger.warning(
+                f"{self.__class__.__name__} starting with ZERO subscribers — "
+                f"deliveries will be left unsettled (redelivered) until one "
+                f"is registered"
+            )
         logger.info(f"Starting consumer {self.__class__.__name__}")
         self._running = True
         self._loop_task = asyncio.create_task(self._poll_loop())

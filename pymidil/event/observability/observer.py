@@ -70,7 +70,7 @@ from typing import (
 from loguru import logger
 
 from pymidil.event.control import ControlSource, HttpControlSource, NullControlSource
-from pymidil.event.exceptions import NonRetryableEventError, RetryableEventError
+from pymidil.exceptions import NonRetryableEventError, RetryableEventError
 from pymidil.event.observability.emitter import (
     TelemetryDispatchHook,
     TelemetryProducerHook,
@@ -205,12 +205,12 @@ class Observation:
         self._consumer_name = consumer_name
         self._delivery = delivery
         self._classify = classify
-        self._marked: Optional[Tuple[EventStatus, Optional[BaseException]]] = None
+        self._marked: Optional[Tuple[EventStatus, Optional[Exception]]] = None
         self._start = 0.0
         self._span_cm: Any = None
         self._entered = False
 
-    def mark(self, status: EventStatus, error: Optional[BaseException] = None) -> None:
+    def mark(self, status: EventStatus, error: Optional[Exception] = None) -> None:
         """Explicitly record this delivery's outcome, overriding inference."""
         self._marked = (status, error)
 
@@ -249,7 +249,7 @@ class Observation:
 
     def _resolve(
         self, exc: Optional[BaseException]
-    ) -> Optional[Tuple[EventStatus, Optional[BaseException]]]:
+    ) -> Optional[Tuple[EventStatus, Optional[Exception]]]:
         """The delivery's outcome: an explicit mark wins; otherwise classify the
         exception; a clean, unmarked exit is a success.
 
@@ -267,7 +267,7 @@ class Observation:
             return None
         return self._classify(exc), exc
 
-    async def _emit(self, status: EventStatus, error: Optional[BaseException]) -> None:
+    async def _emit(self, status: EventStatus, error: Optional[Exception]) -> None:
         delivery, name = self._delivery, self._consumer_name
         duration_ms = (time.monotonic() - self._start) * 1000.0
         if status is EventStatus.SUCCESS:

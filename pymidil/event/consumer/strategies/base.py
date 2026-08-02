@@ -11,7 +11,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from dataclasses import dataclass
 
 from pymidil.event.core import Delivery, Event
-from pymidil.event.exceptions import RetryableEventError
+from pymidil.exceptions import RetryableEventError
 from pymidil.event.idempotency.policy import IdempotencyPolicy
 from pymidil.event.observability.hooks import DispatchHook
 from pymidil.event.otel import consumer_span
@@ -203,10 +203,15 @@ class EventConsumer(ABC):
             await self._safe_notify_hooks("on_receive", delivery)
 
             if not self._subscribers:
-                logger.warning(
-                    f"No subscribers registered for {self.name} event {event.id}"
+                # NEVER ack here: acking would DELETE a message nobody
+                # processed. A consumer polling with zero subscribers is a
+                # wiring bug — leave the delivery unsettled (it redelivers)
+                # and say so loudly.
+                logger.error(
+                    f"{self.name}: no subscribers registered — leaving event "
+                    f"{event.id} unsettled for redelivery. Subscribe before "
+                    f"start(), or stop this consumer."
                 )
-                await delivery.ack()
                 return
 
             subscriber_results = await self._execute_subscribers(event)

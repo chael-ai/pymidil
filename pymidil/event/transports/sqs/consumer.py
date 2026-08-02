@@ -24,7 +24,7 @@ from botocore.exceptions import ClientError
 from loguru import logger
 from pydantic import Field, model_validator
 
-from pymidil.transports.sqs.producer import (
+from pymidil.event.transports.sqs.producer import (
     build_sqs_message_attributes,
     region_from_arn,
 )
@@ -36,10 +36,8 @@ from pymidil.event.control import ControlSource, ControlState
 from pymidil.event.core import Delivery, Event, Settlement
 from pymidil.event.retry import TransportCapabilities
 from pymidil.event.wire import wire_to_event
-from pymidil.utils.retry import AsyncRetry
+from pymidil.utils.backoff import ExponentialBackoff
 from pymidil.utils.time import utcnow
-
-retry_policy = AsyncRetry(retry_on_exceptions=(ClientError,))
 
 _DEFAULT_REGION = "us-east-1"
 
@@ -350,8 +348,13 @@ class SQSConsumer(PullEventConsumer):
                 f"leaving unsettled for redelivery: {e}"
             )
 
-    @retry_policy.retry
     async def _poll_loop(self) -> None:
+        # Polling infrastructure must SURVIVE broker outages: a poll error is
+        # backed off and retried for as long as the consumer runs — a finite
+        # strike count here would permanently kill consumption over a
+        # transient outage longer than a few polls.
+        poll_backoff = ExponentialBackoff(base_delay=1.0, max_delay=30.0)
+        consecutive_errors = 0
         async with self.session.client(
             "sqs",
             region_name=self._config.region,
@@ -375,6 +378,7 @@ class SQSConsumer(PullEventConsumer):
                         AttributeNames=["All"],
                         MessageAttributeNames=["All"],
                     )
+                    consecutive_errors = 0
                     messages = response.get("Messages", [])
                     if messages:
                         logger.debug(
@@ -387,5 +391,10 @@ class SQSConsumer(PullEventConsumer):
                     else:
                         await asyncio.sleep(self._config.poll_interval)
                 except ClientError as e:
-                    logger.warning(f"Error polling SQS: {e}, retrying...")
-                    raise e
+                    consecutive_errors += 1
+                    delay = poll_backoff.next_delay(consecutive_errors)
+                    logger.warning(
+                        f"Error polling SQS ({consecutive_errors} consecutive): "
+                        f"{e} — retrying in {delay:.1f}s"
+                    )
+                    await asyncio.sleep(delay)

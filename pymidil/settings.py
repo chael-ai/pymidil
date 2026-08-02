@@ -1,3 +1,9 @@
+"""Midil settings.
+
+Env-var convention: FLAT platform-contract variables use a single
+underscore (``MIDIL_OBSERVATORY_URL``); STRUCTURED config trees use
+double-underscore nesting (``MIDIL__EVENT__CONSUMERS__<NAME>__<KEY>``).
+"""
 from typing import Dict, Optional, Literal, Any, overload
 from pydantic_settings import BaseSettings, SettingsConfigDict
 from pymidil.exceptions import (

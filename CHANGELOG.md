@@ -109,6 +109,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `retry.*`. Note: SQS attempt counting is `ApproximateReceiveCount` — a
   ceiling on *deliveries*, not handler runs; a queue redrive `maxReceiveCount`
   lower than `max_attempts` diverts broker-side first.
+- **DX hardening (from a blind A/B audit of the SDK).** (1) *No silent queue
+  draining*: a consumer with zero subscribers no longer ACKS (deletes)
+  deliveries — they stay unsettled for redelivery with an ERROR log, and
+  `start()` warns when a consumer boots subscriber-less. (2) *No ambient
+  surprises*: `EventBus` now logs every consumer/producer it absorbs from
+  declarative config (`MIDIL__EVENT` / a `.env` in cwd), and
+  `bus.subscribe()` refuses to guess when multiple consumers are registered —
+  pass `target=` explicitly. (3) *Base install works*: `import pymidil` and
+  `import pymidil.event` no longer require optional dependencies — the root
+  and event barrels are lazy (PEP 562), and a missing extra raises an
+  ImportError naming the extra to install (`pip install 'pymidil[aws]'`).
+  (4) *Papercuts*: `Event.id` is auto-minted (uuid4) when not supplied;
+  `HttpTelemetrySink` is exported from `pymidil.event.observability`; the SQS
+  poll loop now survives broker outages indefinitely (backed-off retry)
+  instead of dying after 3 consecutive errors; the env-var convention is
+  documented (single underscore = flat contract vars, double = nested config).
+  (5) *Pruned*: the vestigial `EventContext` contextvar module (superseded by
+  the OTel plane), the `pymidil.event.exceptions` re-export shim (event errors
+  live at `pymidil.exceptions`), and `RetryMiddleware` (in-process retries
+  fight the transport retry plane) are deleted. (6) *Layout*: transports moved
+  under the domain that owns them — `pymidil.event.transports.<name>` — so the
+  event platform is one package, not two.
 - **The WebSocket transport is removed** (`transports/websocket/`). It failed
   both tests of the transport doctrine: no architectural role (services event
   through brokers; third parties through webhooks; realtime UI belongs to the

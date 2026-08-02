@@ -12,7 +12,10 @@ from __future__ import annotations
 import time
 from dataclasses import dataclass
 from enum import Enum
-from typing import Optional, Protocol
+from typing import TYPE_CHECKING, Optional, Protocol
+
+if TYPE_CHECKING:
+    import httpx
 from loguru import logger
 
 
@@ -70,7 +73,7 @@ class HttpControlSource:
         self._headers = {"X-Api-Key": api_key} if api_key else {}
         self._cached = Control(ControlState.RUNNING)
         self._fetched_at = 0.0
-        self._client = None
+        self._client: Optional["httpx.AsyncClient"] = None
 
     async def get(self) -> Control:
         now = time.monotonic()

@@ -14,7 +14,7 @@ import pytest
 
 from pymidil.event.consumer.strategies.base import BaseConsumerConfig, EventConsumer
 from pymidil.event.core import Delivery, Event, NoAckDelivery
-from pymidil.event.exceptions import RetryableEventError
+from pymidil.exceptions import RetryableEventError
 from pymidil.event.idempotency import IdempotencyPolicy, InMemoryIdempotencyStore
 from pymidil.event.observability import EventStatus, TelemetryDispatchHook
 from pymidil.event.observability.sinks.base import TelemetrySink

@@ -10,12 +10,12 @@ from pydantic_settings import BaseSettings
 from pymidil.event.consumer.strategies.pull import PullEventConsumer
 from pymidil.event.consumer.strategies.push import PushEventConsumer
 from pymidil.event.producer.base import EventProducer
-from pymidil.transports.redis import RedisProducer, RedisProducerEventConfig
+from pymidil.event.transports.redis import RedisProducer, RedisProducerEventConfig
 from pymidil.event.observability.hooks import DispatchHook
 from pymidil.event.observability.platform import Observability, ObservabilitySpec
-from pymidil.transports.sqs import SQSProducer, SQSProducerEventConfig
-from pymidil.transports.sqs import SQSConsumer, SQSConsumerEventConfig
-from pymidil.transports.webhook import WebhookConsumer, WebhookConsumerEventConfig
+from pymidil.event.transports.sqs import SQSProducer, SQSProducerEventConfig
+from pymidil.event.transports.sqs import SQSConsumer, SQSConsumerEventConfig
+from pymidil.event.transports.webhook import WebhookConsumer, WebhookConsumerEventConfig
 from pymidil.event.subscriber.base import (
     ErrorFn,
     EventSubscriber,
@@ -23,7 +23,7 @@ from pymidil.event.subscriber.base import (
     FunctionSubscriber,
     SubscriberMiddleware,
 )
-from pymidil.event.exceptions import (
+from pymidil.exceptions import (
     ConsumerError,
     ConsumerNotImplementedError,
     ProducerError,
@@ -251,9 +251,17 @@ class EventBus:
                     f"Available: {list(self.consumers.keys())}"
                 )
             self.consumers[target].subscribe(handler)
+        elif len(self.consumers) == 1:
+            next(iter(self.consumers.values())).subscribe(handler)
         else:
-            for consumer in self.consumers.values():
-                consumer.subscribe(handler)
+            # Refuse to guess: fanning one handler across every consumer —
+            # including any absorbed from ambient MIDIL__EVENT config — is
+            # almost never intended and silently mixes event streams.
+            raise ConsumerError(
+                f"Multiple consumers are registered "
+                f"({list(self.consumers.keys())}) — pass "
+                f"subscribe(handler, target=<name>) explicitly."
+            )
 
     def subscriber(
         self,
@@ -357,7 +365,21 @@ class EventBus:
                 f"An error occured while trying to load settings {error}, falling back to empty EventConfig ..."
             )
             return EventConfig()
-        return EventConfig(
+        config = EventConfig(
             consumers={name: settings.get_consumer(name) for name in consumers},
             producers={name: settings.get_producer(name) for name in producers},
         )
+        # Ambient config must be VISIBLE: this bus is about to build connectors
+        # the caller never wrote in code (from MIDIL__EVENT / a .env in cwd).
+        absorbed = [
+            f"consumer '{n}' ({c.type})" for n, c in (config.consumers or {}).items()
+        ]
+        absorbed += [
+            f"producer '{n}' ({p.type})" for n, p in (config.producers or {}).items()
+        ]
+        if absorbed:
+            logger.info(
+                f"EventBus loaded declarative config (MIDIL__EVENT): "
+                f"{'; '.join(absorbed)}"
+            )
+        return config

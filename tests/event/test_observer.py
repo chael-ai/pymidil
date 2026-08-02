@@ -22,7 +22,7 @@ from pymidil.event.control import (
     HttpControlSource,
     NullControlSource,
 )
-from pymidil.event.exceptions import NonRetryableEventError, RetryableEventError
+from pymidil.exceptions import NonRetryableEventError, RetryableEventError
 from pymidil.event.observability import (
     ConsumerObserver,
     EventKind,

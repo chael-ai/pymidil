@@ -8,6 +8,12 @@
 
 Producer-backed sinks need a producer instance, so build those explicitly with
 ``ProducerTelemetrySink`` and pass ``sink=`` to :func:`attach_telemetry`.
+
+
+Env-var convention: these are FLAT platform-contract variables (single
+underscore, ``MIDIL_*``) — deliberately distinct from the nested config tree
+(``MIDIL__EVENT__...``, double underscore): single = flat contract, double =
+nested config path.
 """
 
 from __future__ import annotations

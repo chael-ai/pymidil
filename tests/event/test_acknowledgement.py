@@ -18,7 +18,7 @@ from typing import Literal
 import pytest
 from pydantic import Field, ValidationError
 
-from pymidil.transports.sqs.consumer import (
+from pymidil.event.transports.sqs.consumer import (
     SQSConsumer,
     SQSConsumerEventConfig,
     SQSDelivery,
@@ -29,7 +29,7 @@ from pymidil.event.consumer.strategies.base import (
     EventConsumer,
 )
 from pymidil.event.core import Delivery, Event, NoAckDelivery, Settlement
-from pymidil.event.exceptions import RetryableEventError
+from pymidil.exceptions import RetryableEventError
 from pymidil.event.retry import RetryConfig
 from pymidil.event.subscriber.base import EventSubscriber, FunctionSubscriber
 

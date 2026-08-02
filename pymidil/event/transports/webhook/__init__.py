@@ -1,4 +1,4 @@
-from pymidil.transports.webhook.consumer import (
+from pymidil.event.transports.webhook.consumer import (
     WebhookConsumer,
     WebhookConsumerEventConfig,
     WebhookDelivery,

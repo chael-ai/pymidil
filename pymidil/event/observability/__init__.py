@@ -33,6 +33,7 @@ from pymidil.event.observability.sinks import (
     StdoutTelemetrySink,
     TelemetrySink,
 )
+from pymidil.event.observability.sinks.http import HttpTelemetrySink
 
 __all__ = [
     # extension points
@@ -56,6 +57,7 @@ __all__ = [
     # sinks
     "TelemetrySink",
     "StdoutTelemetrySink",
+    "HttpTelemetrySink",
     "NullTelemetrySink",
     # platform integration (default-on, bus-owned)
     "ObservabilityConfig",

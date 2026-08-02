@@ -4,7 +4,7 @@ import pytest
 
 from pymidil.event.core import Event
 from pymidil.event.otel import current_trace_ids, get_tracer
-from pymidil.transports.sqs.producer import (
+from pymidil.event.transports.sqs.producer import (
     SQSProducer,
     SQSProducerEventConfig,
     build_sqs_message_attributes,

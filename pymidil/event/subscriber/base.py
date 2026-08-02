@@ -158,9 +158,7 @@ class FunctionSubscriber(EventSubscriber):
 
         subscriber = FunctionSubscriber(
             handler=lambda event: print(event),
-            middlewares=[
-                RetryMiddleware(ExponentialBackoffPolicy()),
-            ],
+            middlewares=[LoggingMiddleware()],
         )
 
         await subscriber.handle(event)

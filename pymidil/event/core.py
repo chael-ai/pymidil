@@ -13,6 +13,8 @@ from typing import Any, Literal, Mapping, Optional
 from loguru import logger
 from pydantic import BaseModel, Field
 
+from uuid import uuid4
+
 from pymidil.utils.time import utcnow
 
 
@@ -38,7 +40,12 @@ class Event(BaseModel):
         extensions: (Optional) Extension fields for custom or transport-specific metadata.
     """
 
-    id: str = Field(..., description="Logical identity — stable across every delivery")
+    id: str = Field(
+        default_factory=lambda: str(uuid4()),
+        description="Logical identity — stable across every delivery. "
+        "Auto-minted (uuid4) when not supplied; pass an explicit id (or an "
+        "idempotency_key) when consumers must dedup across producer retries.",
+    )
     source: str = Field(
         ..., description="The context that produced the event (a service)"
     )

@@ -3,7 +3,6 @@ import asyncio
 
 from loguru import logger
 from pymidil.event.subscriber.base import SubscriberMiddleware
-from pymidil.utils.retry import BaseAsyncRetryPolicy
 from pymidil.event.core import Event
 
 
@@ -62,40 +61,6 @@ class GroupMiddleware(SubscriberMiddleware):
             for r in results:
                 if isinstance(r, Exception):
                     logger.error(f"[GroupMiddleware] Middleware error: {r}")
-
-
-class RetryMiddleware(SubscriberMiddleware):
-    """
-    Middleware that applies a retry policy to the event handler.
-
-    This middleware wraps the downstream handler (or next middleware) with a retry mechanism,
-    allowing transient errors to be retried according to the provided `RetryPolicy`.
-    It is useful for handling intermittent failures, such as network issues or temporary
-    unavailability of external services, without failing the entire event processing pipeline.
-
-    Args:
-        retry_policy (RetryPolicy): An instance of a retry policy that defines how and when
-            to retry the handler. This can be a custom policy or a standard one such as
-            `ExponentialBackoffPolicy`.
-
-    Example:
-        >>> retry_middleware = RetryMiddleware(ExponentialBackoffPolicy(max_attempts=5))
-        >>> await retry_middleware(handler, event)
-
-    Method:
-        __call__(call_next, event): Invokes the next handler with retry logic applied.
-
-    Raises:
-        Any exception not handled by the retry policy will be propagated.
-    """
-
-    def __init__(self, func: BaseAsyncRetryPolicy):
-        self.func = func
-
-    async def __call__(
-        self, event: Any, call_next: Callable[[Any], Awaitable[Any]]
-    ) -> Any:
-        return await self.func(call_next, event)
 
 
 class LoggingMiddleware(SubscriberMiddleware):
