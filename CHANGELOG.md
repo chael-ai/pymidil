@@ -136,9 +136,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   attempts") reaches telemetry envelopes; exponential backoff no longer
   overflows at high attempt counts on unbounded consumers, and jitter can no
   longer exceed the configured cap.
-- **Transports live under `pymidil.brokers.<name>`.** SQS moved from
-  `event/{consumer,producer}/sqs.py` to `brokers/sqs/` (FastStream/Spring-style
-  transport-first packaging — adding a broker touches one new package). Inside,
+- **Transports live under `pymidil.transports.<name>`.** ALL transports moved
+  out of `event/`: `transports/{sqs,redis,webhook,websocket}/` (transport-first
+  packaging, MassTransit/NServiceBus vocabulary — *transports*, not *brokers*,
+  because push ingress is a transport but not a broker; adding one touches one
+  new package). `event/` keeps only the framework layer (core model, wire,
+  dispatch strategies, producer base, bus, observability). `WebSocketPush*`
+  classes renamed `WebSocket*` for sibling consistency. Inside SQS,
   the roles split: `SQSDelivery` *reads* the wire (identity, attempt count,
   trace carrier) and owns the settle-once latch; `SQSSettlement` *writes* (the
   physical broker calls). `Settlement` is the new core seam — named for the

@@ -1,9 +1,9 @@
 from pymidil.event.event_bus import EventBus
 
 # Producers
-from pymidil.brokers.sqs import SQSProducer, SQSProducerEventConfig
+from pymidil.transports.sqs import SQSProducer, SQSProducerEventConfig
 from pymidil.event.producer.base import BaseProducerConfig
-from pymidil.event.producer.redis import RedisProducer, RedisProducerEventConfig
+from pymidil.transports.redis import RedisProducer, RedisProducerEventConfig
 
 # Consumers (Base, Pull, Push, SQS)
 from pymidil.event.consumer.strategies.base import (
@@ -20,7 +20,7 @@ from pymidil.event.consumer.strategies.push import (
     PushEventConsumer,
     PushEventConsumerConfig,
 )
-from pymidil.brokers.sqs import SQSConsumer, SQSConsumerEventConfig
+from pymidil.transports.sqs import SQSConsumer, SQSConsumerEventConfig
 
 # Subscribers and Middlewares
 from pymidil.event.subscriber.base import (

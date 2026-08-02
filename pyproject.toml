@@ -83,3 +83,8 @@ ignore_missing_imports = true
 [build-system]
 requires = ["poetry-core"]
 build-backend = "poetry.core.masonry.api"
+
+[tool.pytest.ini_options]
+# The SDK's suite. examples/ are runnable mini-apps, not part of the test run
+# (their own test files are exercised by whoever runs the example).
+testpaths = ["tests"]

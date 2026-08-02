@@ -10,12 +10,12 @@ from pydantic_settings import BaseSettings
 from pymidil.event.consumer.strategies.pull import PullEventConsumer
 from pymidil.event.consumer.strategies.push import PushEventConsumer
 from pymidil.event.producer.base import EventProducer
-from pymidil.event.producer.redis import RedisProducer, RedisProducerEventConfig
+from pymidil.transports.redis import RedisProducer, RedisProducerEventConfig
 from pymidil.event.observability.hooks import DispatchHook
 from pymidil.event.observability.platform import Observability, ObservabilitySpec
-from pymidil.brokers.sqs import SQSProducer, SQSProducerEventConfig
-from pymidil.brokers.sqs import SQSConsumer, SQSConsumerEventConfig
-from pymidil.event.consumer.webhook import WebhookConsumer, WebhookConsumerEventConfig
+from pymidil.transports.sqs import SQSProducer, SQSProducerEventConfig
+from pymidil.transports.sqs import SQSConsumer, SQSConsumerEventConfig
+from pymidil.transports.webhook import WebhookConsumer, WebhookConsumerEventConfig
 from pymidil.event.subscriber.base import (
     ErrorFn,
     EventSubscriber,

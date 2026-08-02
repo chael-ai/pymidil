@@ -1,8 +1,8 @@
 import pytest
 from pymidil.settings import MidilSettings, EventSettingsError
 from pymidil.event.config import EventConfig, EventConsumerType
-from pymidil.brokers.sqs.consumer import SQSConsumerEventConfig
-from pymidil.event.consumer.webhook import WebhookConsumerEventConfig
+from pymidil.transports.sqs.consumer import SQSConsumerEventConfig
+from pymidil.transports.webhook import WebhookConsumerEventConfig
 
 
 def _settings_with_consumers(**consumers) -> MidilSettings:

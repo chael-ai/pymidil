@@ -18,7 +18,7 @@ from typing import Literal
 import pytest
 from pydantic import Field, ValidationError
 
-from pymidil.brokers.sqs.consumer import (
+from pymidil.transports.sqs.consumer import (
     SQSConsumer,
     SQSConsumerEventConfig,
     SQSDelivery,

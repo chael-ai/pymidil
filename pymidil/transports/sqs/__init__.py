@@ -1,10 +1,10 @@
-from pymidil.brokers.sqs.consumer import (
+from pymidil.transports.sqs.consumer import (
     SQSConsumer,
     SQSConsumerEventConfig,
     SQSDelivery,
     SQSSettlement,
 )
-from pymidil.brokers.sqs.producer import SQSProducer, SQSProducerEventConfig
+from pymidil.transports.sqs.producer import SQSProducer, SQSProducerEventConfig
 
 __all__ = [
     "SQSConsumer",

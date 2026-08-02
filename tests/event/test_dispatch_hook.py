@@ -5,7 +5,7 @@ from pymidil.event import DispatchHook
 from pymidil.event.core import Delivery, Event, NoAckDelivery
 from pymidil.event.event_bus import EventBus
 from pymidil.event.config import EventConfig
-from pymidil.event.consumer.webhook import WebhookConsumerEventConfig
+from pymidil.transports.webhook import WebhookConsumerEventConfig
 from pymidil.event.exceptions import ConsumerError
 
 

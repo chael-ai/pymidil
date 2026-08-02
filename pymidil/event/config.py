@@ -3,10 +3,10 @@ from __future__ import annotations
 from typing import Annotated, Optional, Union, TypeAlias, Mapping
 
 from pydantic import BaseModel, Field
-from pymidil.brokers.sqs.consumer import SQSConsumerEventConfig
-from pymidil.event.consumer.webhook import WebhookConsumerEventConfig
-from pymidil.event.producer.redis import RedisProducerEventConfig
-from pymidil.brokers.sqs.producer import SQSProducerEventConfig
+from pymidil.transports.sqs.consumer import SQSConsumerEventConfig
+from pymidil.transports.webhook import WebhookConsumerEventConfig
+from pymidil.transports.redis import RedisProducerEventConfig
+from pymidil.transports.sqs.producer import SQSProducerEventConfig
 from enum import Enum
 
 

@@ -23,15 +23,15 @@ class WebSocketDelivery(NoAckDelivery):
     """One WebSocket frame delivery — no ack, no trace carrier."""
 
 
-class WebSocketPushConsumerEventConfig(PushEventConsumerConfig):
+class WebSocketConsumerEventConfig(PushEventConsumerConfig):
     type: str = "websocket"
     endpoint: str = "/events/ws"
 
 
-class WebSocketPushConsumer(PushEventConsumer):
-    def __init__(self, config: WebSocketPushConsumerEventConfig):
+class WebSocketConsumer(PushEventConsumer):
+    def __init__(self, config: WebSocketConsumerEventConfig):
         super().__init__(config)
-        self._config: WebSocketPushConsumerEventConfig = config
+        self._config: WebSocketConsumerEventConfig = config
         self._router = APIRouter()
         self.connections: List[WebSocket] = []
 

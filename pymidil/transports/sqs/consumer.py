@@ -24,7 +24,7 @@ from botocore.exceptions import ClientError
 from loguru import logger
 from pydantic import Field, model_validator
 
-from pymidil.brokers.sqs.producer import (
+from pymidil.transports.sqs.producer import (
     build_sqs_message_attributes,
     region_from_arn,
 )
