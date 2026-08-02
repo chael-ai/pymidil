@@ -1,85 +1,28 @@
-from pymidil.event.event_bus import EventBus
+"""Event package public API.
 
-# Producers
-from pymidil.event.producer.sqs import SQSProducer, SQSProducerEventConfig
-from pymidil.event.producer.base import BaseProducerConfig
-from pymidil.event.producer.redis import RedisProducer, RedisProducerEventConfig
+Heavy optional transports (SQS, Redis, webhook/FastAPI) are loaded lazily so
+``import pymidil.event.observability`` works without installing every extra.
+"""
 
-# Consumers (Base, Pull, Push, SQS)
-from pymidil.event.consumer.strategies.base import (
-    EventConsumer,
-    BaseConsumerConfig,
-    ConsumerMessage,
-)
-from pymidil.event.message import Message
-from pymidil.event.consumer.strategies.pull import (
-    PullEventConsumer,
-    PullEventConsumerConfig,
-)
-from pymidil.event.consumer.strategies.push import (
-    PushEventConsumer,
-    PushEventConsumerConfig,
-)
-from pymidil.event.consumer.sqs import SQSConsumer, SQSConsumerEventConfig
+from __future__ import annotations
 
-# Subscribers and Middlewares
-from pymidil.event.subscriber.base import (
-    EventSubscriber,
-    FunctionSubscriber,
-    SubscriberMiddleware,
-)
-from pymidil.event.subscriber.middleware import (
-    GroupMiddleware,
-    RetryMiddleware,
-)
+from typing import Any
 
-# Exceptions
+# Eager: small, always-useful surfaces with no optional deps.
 from pymidil.event.exceptions import (
     BaseEventError,
-    ConsumerError,
     ConsumerCrashError,
+    ConsumerError,
     ConsumerNotImplementedError,
     ConsumerStartError,
-    RetryableEventError,
     NonRetryableEventError,
     ProducerError,
     ProducerNotImplementedError,
+    RetryableEventError,
     TransportNotImplementedError,
 )
-
-# Context
-from pymidil.event.context import EventContext, get_current_event, event_context
-
-# Observability extension points + telemetry (A2)
-from pymidil.event.observability import (
-    ConsumerObserver,
-    DispatchHook,
-    ProducerObserver,
-    EventKind,
-    EventStatus,
-    MessageProtocol,
-    ProducerHook,
-    PublishRecord,
-    TelemetryDispatchHook,
-    TelemetryEnvelope,
-    TelemetryProducerHook,
-    TelemetrySettings,
-    TelemetrySink,
-    attach_telemetry,
-)
-
-# Idempotency (A3)
-from pymidil.event.idempotency import (
-    IdempotencyPolicy,
-    IdempotencyStore,
-    InMemoryIdempotencyStore,
-    RedisIdempotencyStore,
-)
-
-# Dead-letter operations (A4)
-from pymidil.event.dlq import DlqRedriver, SQSDlqRedriver
-
-# Acknowledgement (transport-agnostic dispositions: ack / retry / dlq)
+from pymidil.event.context import EventContext, event_context, get_current_event
+from pymidil.event.message import Message
 from pymidil.event.acknowledgement import Acknowledger
 
 __all__ = [
@@ -139,6 +82,11 @@ __all__ = [
     "TelemetrySink",
     "TelemetrySettings",
     "attach_telemetry",
+    "create_producer_observer",
+    "create_consumer_observer",
+    "observe_publish",
+    "observe_consume",
+    "clear_observer_caches",
     # Idempotency (A3)
     "IdempotencyStore",
     "InMemoryIdempotencyStore",
@@ -150,3 +98,96 @@ __all__ = [
     # Acknowledgement
     "Acknowledger",
 ]
+
+_LAZY: dict[str, tuple[str, str]] = {
+    "EventBus": ("pymidil.event.event_bus", "EventBus"),
+    "SQSProducer": ("pymidil.event.producer.sqs", "SQSProducer"),
+    "SQSProducerEventConfig": ("pymidil.event.producer.sqs", "SQSProducerEventConfig"),
+    "BaseProducerConfig": ("pymidil.event.producer.base", "BaseProducerConfig"),
+    "RedisProducer": ("pymidil.event.producer.redis", "RedisProducer"),
+    "RedisProducerEventConfig": (
+        "pymidil.event.producer.redis",
+        "RedisProducerEventConfig",
+    ),
+    "EventConsumer": ("pymidil.event.consumer.strategies.base", "EventConsumer"),
+    "BaseConsumerConfig": (
+        "pymidil.event.consumer.strategies.base",
+        "BaseConsumerConfig",
+    ),
+    "ConsumerMessage": ("pymidil.event.consumer.strategies.base", "ConsumerMessage"),
+    "PullEventConsumer": (
+        "pymidil.event.consumer.strategies.pull",
+        "PullEventConsumer",
+    ),
+    "PullEventConsumerConfig": (
+        "pymidil.event.consumer.strategies.pull",
+        "PullEventConsumerConfig",
+    ),
+    "PushEventConsumer": (
+        "pymidil.event.consumer.strategies.push",
+        "PushEventConsumer",
+    ),
+    "PushEventConsumerConfig": (
+        "pymidil.event.consumer.strategies.push",
+        "PushEventConsumerConfig",
+    ),
+    "SQSConsumer": ("pymidil.event.consumer.sqs", "SQSConsumer"),
+    "SQSConsumerEventConfig": (
+        "pymidil.event.consumer.sqs",
+        "SQSConsumerEventConfig",
+    ),
+    "EventSubscriber": ("pymidil.event.subscriber.base", "EventSubscriber"),
+    "FunctionSubscriber": ("pymidil.event.subscriber.base", "FunctionSubscriber"),
+    "SubscriberMiddleware": ("pymidil.event.subscriber.base", "SubscriberMiddleware"),
+    "GroupMiddleware": ("pymidil.event.subscriber.middleware", "GroupMiddleware"),
+    "RetryMiddleware": ("pymidil.event.subscriber.middleware", "RetryMiddleware"),
+    "DispatchHook": ("pymidil.event.observability", "DispatchHook"),
+    "ProducerHook": ("pymidil.event.observability", "ProducerHook"),
+    "PublishRecord": ("pymidil.event.observability", "PublishRecord"),
+    "MessageProtocol": ("pymidil.event.observability", "MessageProtocol"),
+    "TelemetryEnvelope": ("pymidil.event.observability", "TelemetryEnvelope"),
+    "EventStatus": ("pymidil.event.observability", "EventStatus"),
+    "EventKind": ("pymidil.event.observability", "EventKind"),
+    "TelemetryDispatchHook": ("pymidil.event.observability", "TelemetryDispatchHook"),
+    "ConsumerObserver": ("pymidil.event.observability", "ConsumerObserver"),
+    "ProducerObserver": ("pymidil.event.observability", "ProducerObserver"),
+    "TelemetryProducerHook": ("pymidil.event.observability", "TelemetryProducerHook"),
+    "TelemetrySink": ("pymidil.event.observability", "TelemetrySink"),
+    "TelemetrySettings": ("pymidil.event.observability", "TelemetrySettings"),
+    "attach_telemetry": ("pymidil.event.observability", "attach_telemetry"),
+    "create_producer_observer": (
+        "pymidil.event.observability",
+        "create_producer_observer",
+    ),
+    "create_consumer_observer": (
+        "pymidil.event.observability",
+        "create_consumer_observer",
+    ),
+    "observe_publish": ("pymidil.event.observability", "observe_publish"),
+    "observe_consume": ("pymidil.event.observability", "observe_consume"),
+    "clear_observer_caches": (
+        "pymidil.event.observability",
+        "clear_observer_caches",
+    ),
+    "IdempotencyStore": ("pymidil.event.idempotency", "IdempotencyStore"),
+    "InMemoryIdempotencyStore": (
+        "pymidil.event.idempotency",
+        "InMemoryIdempotencyStore",
+    ),
+    "RedisIdempotencyStore": ("pymidil.event.idempotency", "RedisIdempotencyStore"),
+    "IdempotencyPolicy": ("pymidil.event.idempotency", "IdempotencyPolicy"),
+    "DlqRedriver": ("pymidil.event.dlq", "DlqRedriver"),
+    "SQSDlqRedriver": ("pymidil.event.dlq", "SQSDlqRedriver"),
+}
+
+
+def __getattr__(name: str) -> Any:
+    try:
+        module_name, attr = _LAZY[name]
+    except KeyError as exc:
+        raise AttributeError(f"module {__name__!r} has no attribute {name!r}") from exc
+    from importlib import import_module
+
+    value = getattr(import_module(module_name), attr)
+    globals()[name] = value
+    return value

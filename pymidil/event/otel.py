@@ -17,6 +17,7 @@ attributes) are flattened to this form at the transport edge via the consumer's
 from __future__ import annotations
 
 from contextlib import contextmanager
+from contextvars import ContextVar
 from typing import Any, Iterator, Mapping, MutableMapping, Optional, Tuple
 
 from opentelemetry import trace
@@ -27,6 +28,12 @@ from opentelemetry.trace import Link, Span, SpanContext, SpanKind, Tracer
 
 TRACER_NAME = "pymidil.event"
 DISCONTINUITY_ATTR = "midil.trace.discontinuity"
+
+#: Allows sync observation to close the OTel span before ``asyncio.run`` (emit)
+#: while still stamping the captured ids onto the envelope.
+_SPAN_IDS_OVERRIDE: ContextVar[
+    Optional[Tuple[Optional[str], Optional[str], Optional[str]]]
+] = ContextVar("pymidil_span_ids_override", default=None)
 
 
 def get_tracer() -> Tracer:
@@ -72,6 +79,9 @@ def current_span_ids() -> Tuple[Optional[str], Optional[str], Optional[str]]:
     parent is read from the SDK span (``.parent``); it is None for a root span
     or when no SDK TracerProvider is configured.
     """
+    override = _SPAN_IDS_OVERRIDE.get()
+    if override is not None:
+        return override
     span = trace.get_current_span()
     sc = span.get_span_context()
     if not sc.is_valid:
@@ -81,6 +91,18 @@ def current_span_ids() -> Tuple[Optional[str], Optional[str], Optional[str]]:
         _hex(parent.span_id, 16) if parent is not None and parent.is_valid else None
     )
     return _hex(sc.trace_id, 32), _hex(sc.span_id, 16), parent_span_id
+
+
+@contextmanager
+def override_span_ids(
+    ids: Tuple[Optional[str], Optional[str], Optional[str]],
+) -> Iterator[None]:
+    """Use captured span ids while the live span is already closed (sync emit)."""
+    token = _SPAN_IDS_OVERRIDE.set(ids)
+    try:
+        yield
+    finally:
+        _SPAN_IDS_OVERRIDE.reset(token)
 
 
 def inject_headers(carrier: MutableMapping[str, str]) -> MutableMapping[str, str]:

@@ -29,6 +29,28 @@ the *produced* leg (the ingress node) and making publish failures observable::
         )
         pub.sent(f"orders/{md.partition}/{md.offset}")   # groups with the delivery
 
+Sync call sites (Django, Celery, …) use the same objects with ``with`` instead
+of ``async with``, or the helpers in
+:mod:`pymidil.event.observability.sync_api`::
+
+    from pymidil.event.observability import observe_publish, observe_consume
+
+    result = observe_publish(
+        "OrderPlaced",
+        destination="orders",
+        payload=order,
+        idempotency_key="OD-1:OrderPlaced",
+        send=enqueue,
+    )
+
+    observe_consume(
+        message_id,
+        "OrderPlaced",
+        consumer="orders-worker",
+        payload=order,
+        handle=process,
+    )
+
 Each observed delivery gets, automatically:
 
 * **trace continuity** — the W3C ``traceparent`` in the delivery headers is
@@ -52,6 +74,7 @@ error is logged, never raised into the caller's consume loop.
 from __future__ import annotations
 
 import time
+import uuid
 from dataclasses import dataclass, field
 from datetime import datetime
 from typing import (
@@ -79,9 +102,12 @@ from pymidil.event.observability.sinks.base import TelemetrySink
 from pymidil.event.otel import (
     coerce_header_value,
     consumer_span,
+    current_span_ids,
     inject_headers,
+    override_span_ids,
     producer_span,
 )
+from pymidil.utils.sync import run_sync
 
 #: Anything a transport hands back as headers: a mapping (HTTP, SQS attribute
 #: dicts) or an iterable of key/value pairs (Kafka's ``list[tuple[str, bytes]]``).
@@ -191,11 +217,11 @@ class Observation:
         """Explicitly record this delivery's outcome, overriding inference."""
         self._marked = (status, error)
 
-    async def __aenter__(self) -> "Observation":
+    def _enter(self) -> "Observation":
         # Single-use: reusing one Observation would leak span context across
         # deliveries and let a stale mark() win over the next outcome. Like an
-        # OTel span, observe each delivery under its own ``async with`` and
-        # don't interleave two observations within one task.
+        # OTel span, observe each delivery under its own ``with`` / ``async with``
+        # and don't interleave two observations within one task.
         if self._entered:
             raise RuntimeError(
                 "Observation is single-use — call observe(...) once per delivery"
@@ -207,6 +233,13 @@ class Observation:
         self._span_cm = consumer_span(self._carrier, self._consumer_name)
         self._span_cm.__enter__()
         return self
+
+    async def __aenter__(self) -> "Observation":
+        return self._enter()
+
+    def __enter__(self) -> "Observation":
+        """Sync twin of :meth:`__aenter__` for Django / Celery call sites."""
+        return self._enter()
 
     async def __aexit__(self, exc_type, exc, tb) -> bool:
         try:
@@ -223,6 +256,29 @@ class Observation:
         finally:
             self._span_cm.__exit__(exc_type, exc, tb)
         return False  # never swallow the handler's exception
+
+    def __exit__(self, exc_type, exc, tb) -> bool:
+        # Close the OTel span in this context BEFORE asyncio.run(emit).
+        # Leaving the span open across asyncio.run copies ContextVars and
+        # breaks detach ("Token was created in a different Context").
+        outcome = self._resolve(exc)
+        span_ids = current_span_ids() if outcome is not None else None
+        try:
+            self._span_cm.__exit__(exc_type, exc, tb)
+        finally:
+            self._span_cm = None
+        if outcome is None:
+            return False
+        status, error = outcome
+        try:
+            with override_span_ids(span_ids or (None, None, None)):
+                run_sync(self._emit(status, error))
+        except Exception as emit_error:  # observation must never break consumption
+            logger.warning(
+                f"[observer] telemetry emission failed for "
+                f"{self._message.id}: {emit_error}"
+            )
+        return False
 
     def _resolve(
         self, exc: Optional[BaseException]
@@ -355,7 +411,8 @@ class ConsumerObserver:
             headers: Delivery headers — the W3C ``traceparent`` is extracted
                 from here for trace continuity.
             payload: Message body (attached when ``include_payload``).
-            idempotency_key: Business dedup key; defaults to ``message_id``.
+            idempotency_key: Business dedup key; defaults to ``message_id``
+                when omitted.
             attempts: Delivery attempt number, if the transport exposes one.
             occurred_at: Message timestamp; defaults to emission time.
         """
@@ -364,11 +421,14 @@ class ConsumerObserver:
         metadata["event_type"] = event_type
         if attempts is not None:
             metadata["attempts"] = str(attempts)
+        resolved_key = (
+            str(idempotency_key) if idempotency_key is not None else str(message_id)
+        )
         message = ObservedMessage(
             id=str(message_id),
             body=payload,
             metadata=metadata,
-            idempotency_key=idempotency_key,
+            idempotency_key=resolved_key,
             timestamp=occurred_at,
         )
         return Observation(
@@ -385,6 +445,10 @@ class ConsumerObserver:
         close = getattr(self.control, "aclose", None)
         if close is not None:
             await close()
+
+    def close(self) -> None:
+        """Sync twin of :meth:`aclose`."""
+        run_sync(self.aclose())
 
 
 class PublishObservation:
@@ -466,7 +530,7 @@ class PublishObservation:
             return
         self._message_id = str(message_id)
 
-    async def __aenter__(self) -> "PublishObservation":
+    def _enter(self) -> "PublishObservation":
         if self._entered:
             raise RuntimeError(
                 "PublishObservation is single-use — call publish(...) once per send"
@@ -480,22 +544,32 @@ class PublishObservation:
         self._start = time.monotonic()
         return self
 
+    async def __aenter__(self) -> "PublishObservation":
+        return self._enter()
+
+    def __enter__(self) -> "PublishObservation":
+        """Sync twin of :meth:`__aenter__` for Django / Celery call sites."""
+        return self._enter()
+
+    async def _emit_outcome(self, exc: Optional[BaseException]) -> None:
+        if exc is not None and not isinstance(exc, Exception):
+            return  # cancellation / shutdown — not a publish outcome
+        record = PublishRecord(
+            destination=self._destination,
+            payload=self._payload,
+            metadata=self._headers,
+            message_id=self._message_id,
+            duration_ms=(time.monotonic() - self._start) * 1000.0,
+        )
+        if exc is None:
+            await self._hook.on_publish(record, self._producer_name)
+        else:
+            await self._hook.on_publish_error(record, self._producer_name, exc)
+
     async def __aexit__(self, exc_type, exc, tb) -> bool:
         self._emitted = True  # from here on, a late sent() can't reach the wire
         try:
-            # Cancellation is the process stopping, not a publish outcome.
-            if exc is None or isinstance(exc, Exception):
-                record = PublishRecord(
-                    destination=self._destination,
-                    payload=self._payload,
-                    metadata=self._headers,
-                    message_id=self._message_id,
-                    duration_ms=(time.monotonic() - self._start) * 1000.0,
-                )
-                if exc is None:
-                    await self._hook.on_publish(record, self._producer_name)
-                else:
-                    await self._hook.on_publish_error(record, self._producer_name, exc)
+            await self._emit_outcome(exc)
         except Exception as emit_error:  # observation must never break the send path
             logger.warning(
                 f"[observer] producer telemetry emission failed for "
@@ -504,6 +578,24 @@ class PublishObservation:
         finally:
             self._span_cm.__exit__(exc_type, exc, tb)
         return False  # never swallow the send's exception
+
+    def __exit__(self, exc_type, exc, tb) -> bool:
+        # Close the OTel span before asyncio.run(emit) — see Observation.__exit__.
+        self._emitted = True
+        span_ids = current_span_ids()
+        try:
+            self._span_cm.__exit__(exc_type, exc, tb)
+        finally:
+            self._span_cm = None
+        try:
+            with override_span_ids(span_ids):
+                run_sync(self._emit_outcome(exc))
+        except Exception as emit_error:  # observation must never break the send path
+            logger.warning(
+                f"[observer] producer telemetry emission failed for "
+                f"{self._destination}: {emit_error}"
+            )
+        return False
 
 
 class ProducerObserver:
@@ -571,6 +663,7 @@ class ProducerObserver:
             destination: Topic/queue name — the PRODUCER span's target.
             payload: The published body (attached when ``include_payload``).
             idempotency_key: Business dedup key to stamp on the wire headers.
+                Generated when omitted.
             headers: The team's own outgoing headers to merge, if any.
         """
         return PublishObservation(
@@ -579,10 +672,14 @@ class ProducerObserver:
             destination=destination,
             event_type=event_type,
             payload=payload,
-            idempotency_key=idempotency_key,
+            idempotency_key=idempotency_key or str(uuid.uuid4()),
             headers=headers,
         )
 
     async def aclose(self) -> None:
         """Release the sink's network resources."""
         await self._sink.aclose()
+
+    def close(self) -> None:
+        """Sync twin of :meth:`aclose`."""
+        run_sync(self.aclose())
