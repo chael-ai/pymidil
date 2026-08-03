@@ -6,16 +6,6 @@
     bus = EventBus(...)
     hook = attach_telemetry(bus)   # reads MIDIL_TELEMETRY_* env
 
-For broker-agnostic observers (existing Django / Kafka / … loops)::
-
-    from pymidil.event.observability.config import (
-        create_consumer_observer,
-        create_producer_observer,
-    )
-
-    publish = create_producer_observer()          # MIDIL_TELEMETRY_* env
-    observe = create_consumer_observer("worker")
-
 Producer-backed sinks need a producer instance, so build those explicitly with
 ``ProducerTelemetrySink`` and pass ``sink=`` to :func:`attach_telemetry`.
 """
@@ -27,7 +17,6 @@ from typing import TYPE_CHECKING, Literal, Optional
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from pymidil.event.observability.emitter import TelemetryDispatchHook
-from pymidil.event.observability.observer import ConsumerObserver, ProducerObserver
 from pymidil.event.observability.sinks.base import TelemetrySink
 from pymidil.event.observability.sinks.null import NullTelemetrySink
 from pymidil.event.observability.sinks.stdout import StdoutTelemetrySink
@@ -80,38 +69,6 @@ def create_telemetry_hook(
         sink or create_sink(settings),
         source_service=settings.source_service,
         broker=settings.broker,
-        include_payload=settings.include_payload,
-    )
-
-
-def create_producer_observer(
-    settings: Optional[TelemetrySettings] = None,
-    *,
-    sink: Optional[TelemetrySink] = None,
-) -> ProducerObserver:
-    """Build a :class:`ProducerObserver` from ``MIDIL_TELEMETRY_*`` settings."""
-    settings = settings or TelemetrySettings()
-    return ProducerObserver(
-        source_service=settings.source_service,
-        broker=settings.broker or "unknown",
-        sink=sink or create_sink(settings),
-        include_payload=settings.include_payload,
-    )
-
-
-def create_consumer_observer(
-    consumer: str,
-    settings: Optional[TelemetrySettings] = None,
-    *,
-    sink: Optional[TelemetrySink] = None,
-) -> ConsumerObserver:
-    """Build a :class:`ConsumerObserver` from ``MIDIL_TELEMETRY_*`` settings."""
-    settings = settings or TelemetrySettings()
-    return ConsumerObserver(
-        consumer=consumer,
-        broker=settings.broker or "unknown",
-        sink=sink or create_sink(settings),
-        source_service=settings.source_service,
         include_payload=settings.include_payload,
     )
 

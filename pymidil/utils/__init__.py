@@ -6,7 +6,6 @@ from pymidil.utils.backoff import (
     ExponentialBackoff,
     ExponentialBackoffWithJitter,
 )
-from pymidil.utils.sync import run_sync
 
 __all__ = [
     "to_snake_case",
@@ -16,5 +15,4 @@ __all__ = [
     "BackoffStrategy",
     "ExponentialBackoff",
     "ExponentialBackoffWithJitter",
-    "run_sync",
 ]

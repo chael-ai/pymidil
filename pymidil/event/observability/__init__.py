@@ -1,15 +1,8 @@
 from pymidil.event.observability.config import (
     TelemetrySettings,
     attach_telemetry,
-    create_consumer_observer,
-    create_producer_observer,
     create_sink,
     create_telemetry_hook,
-)
-from pymidil.event.observability.sync_api import (
-    clear_observer_caches,
-    observe_consume,
-    observe_publish,
 )
 from pymidil.event.observability.emitter import (
     TelemetryDispatchHook,
@@ -68,11 +61,5 @@ __all__ = [
     "TelemetrySettings",
     "create_sink",
     "create_telemetry_hook",
-    "create_producer_observer",
-    "create_consumer_observer",
     "attach_telemetry",
-    # sync helpers (Django / Celery / …)
-    "observe_publish",
-    "observe_consume",
-    "clear_observer_caches",
 ]
