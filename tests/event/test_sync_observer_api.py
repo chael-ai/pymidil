@@ -212,6 +212,31 @@ def test_sync_publish_does_not_raise_otel_context_detach(caplog):
     assert "Failed to detach context" not in caplog.text
 
 
+def test_observe_publish_prefers_explicit_message_id_over_send_result():
+    sink = CapturingSink()
+    settings = TelemetrySettings(
+        enabled=True,
+        sink="null",
+        source_service="philantify",
+        broker="django-q",
+    )
+    observer = create_producer_observer(settings, sink=sink)
+
+    result = observe_publish(
+        "OrderPlaced",
+        destination="orders",
+        send=lambda: "django-q-task-id",
+        message_id="business-event-id",
+        idempotency_key="business-event-id",
+        observer=observer,
+    )
+
+    assert result == "django-q-task-id"
+    (env,) = sink.envelopes
+    assert env.message_id == "business-event-id"
+    assert env.idempotency_key == "business-event-id"
+
+
 def test_observe_consume_runs_handle_without_event_loop():
     """Django ORM forbids sync DB work inside asyncio.run — keep handle sync."""
     import asyncio

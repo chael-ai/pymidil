@@ -77,7 +77,10 @@ def observe_publish(
     else:
         publish = _cached_producer_observer()
 
-    fallback_id = message_id or str(uuid.uuid4())
+    # Prefer an explicit message_id (e.g. business event_id) for lineage so
+    # producer/consumer envelopes group together. Fall back to send()'s return
+    # value (transport id) only when message_id was not provided.
+    delivery_id = message_id or str(uuid.uuid4())
 
     # Sync ``with`` keeps send() outside any event loop (Django ORM safe).
     # Observation.__exit__ emits telemetry via run_sync after closing the span.
@@ -89,7 +92,10 @@ def observe_publish(
         headers=headers,
     ) as pub:
         result = send()
-        pub.sent(result if result is not None else fallback_id)
+        if message_id is not None:
+            pub.sent(message_id)
+        else:
+            pub.sent(result if result is not None else delivery_id)
         return result
 
 
