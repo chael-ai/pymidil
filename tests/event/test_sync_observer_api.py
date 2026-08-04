@@ -212,6 +212,39 @@ def test_sync_publish_does_not_raise_otel_context_detach(caplog):
     assert "Failed to detach context" not in caplog.text
 
 
+def test_observe_consume_runs_handle_without_event_loop():
+    """Django ORM forbids sync DB work inside asyncio.run — keep handle sync."""
+    import asyncio
+
+    sink = CapturingSink()
+    settings = TelemetrySettings(
+        enabled=True,
+        sink="null",
+        source_service="philantify",
+        broker="django-q",
+    )
+    observer = create_consumer_observer("worker", settings, sink=sink)
+    seen_loop = {"running": None}
+
+    def handle() -> None:
+        try:
+            asyncio.get_running_loop()
+            seen_loop["running"] = True
+        except RuntimeError:
+            seen_loop["running"] = False
+
+    observe_consume(
+        "m-1",
+        "OrderPlaced",
+        consumer="worker",
+        handle=handle,
+        observer=observer,
+    )
+
+    assert seen_loop["running"] is False
+    assert sink.envelopes
+
+
 def test_sync_publish_keeps_trace_ids_when_loop_already_running():
     """ASGI path: run_sync hops to a worker thread; ContextVars must follow."""
     import asyncio

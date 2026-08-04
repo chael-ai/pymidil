@@ -2,6 +2,10 @@
 
 Intended for Django, Celery, Django-Q, and other sync runtimes that already
 own their enqueue / handler path and only need Midil telemetry around it.
+
+Important: ``send`` / ``handle`` run in a normal sync context (no event loop),
+so Django ORM and other sync-only APIs are safe. Only telemetry emission is
+bridged through asyncio.
 """
 
 from __future__ import annotations
@@ -21,7 +25,6 @@ from pymidil.event.observability.observer import (
     HeadersLike,
     ProducerObserver,
 )
-from pymidil.utils.sync import run_sync
 
 T = TypeVar("T")
 
@@ -76,21 +79,18 @@ def observe_publish(
 
     fallback_id = message_id or str(uuid.uuid4())
 
-    # Keep the full observation inside one asyncio.run so OTel span
-    # enter/exit share a ContextVar context.
-    async def _run() -> T:
-        async with publish(
-            event_type,
-            destination=destination,
-            payload=payload,
-            idempotency_key=idempotency_key,
-            headers=headers,
-        ) as pub:
-            result = send()
-            pub.sent(result if result is not None else fallback_id)
-            return result
-
-    return run_sync(_run())
+    # Sync ``with`` keeps send() outside any event loop (Django ORM safe).
+    # Observation.__exit__ emits telemetry via run_sync after closing the span.
+    with publish(
+        event_type,
+        destination=destination,
+        payload=payload,
+        idempotency_key=idempotency_key,
+        headers=headers,
+    ) as pub:
+        result = send()
+        pub.sent(result if result is not None else fallback_id)
+        return result
 
 
 def observe_consume(
@@ -121,14 +121,12 @@ def observe_consume(
     else:
         observe = _cached_consumer_observer(consumer)
 
-    async def _run() -> None:
-        async with observe(
-            message_id,
-            event_type,
-            payload=payload,
-            idempotency_key=idempotency_key,
-            headers=headers,
-        ):
-            handle()
-
-    run_sync(_run())
+    # Sync ``with`` keeps handle() outside any event loop (Django ORM safe).
+    with observe(
+        message_id,
+        event_type,
+        payload=payload,
+        idempotency_key=idempotency_key,
+        headers=headers,
+    ):
+        handle()
