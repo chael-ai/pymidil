@@ -4,7 +4,7 @@ from typing import Any, Awaitable, Callable, Optional, Union
 
 from loguru import logger
 
-from pymidil.event.core import Event
+from pymidil.event.core import Delivery, Event
 
 FilterFn = Callable[[Event], Union[Awaitable[bool], bool]]
 ErrorFn = Callable[[Event, Exception], Union[Awaitable[None], None]]
@@ -101,6 +101,57 @@ class EventSubscriber(ABC):
             raise
         else:
             await self.on_success(event)
+
+
+class ManualSubscriber(ABC):
+    """The sole settlement authority for its consumer — single-authority mode.
+
+    The paved road (:class:`EventSubscriber`) receives the ``Event`` and
+    drives the outcome by what it returns or raises; the dispatcher settles.
+    A ``ManualSubscriber`` inverts that ONE relationship: it receives the
+    :class:`~pymidil.event.core.Delivery` and may settle it directly
+    (``await delivery.ack() / .retry(delay) / .dlq(error)``) — the
+    Kombu/aio-pika/FastStream manual-acknowledgement mode, admitted here under
+    the constraints that make it coherent:
+
+    * **Exclusive by construction** — a consumer accepts EITHER one
+      ``ManualSubscriber`` OR any number of ``EventSubscriber``s, never both
+      (``subscribe()`` refuses loudly). Handler-held settlement is only
+      meaningful when exactly one handler owns the delivery; under fan-out it
+      degenerates into a scheduling race, which is why the aggregation mode
+      exists and remains the default.
+    * **The latch is still the law** — the delivery settles exactly once;
+      the verbs this class calls are the same first-wins latch the dispatcher
+      uses, so a double-settle is refused loudly, never raced.
+    * **Telemetry is reported from the latch** — after ``handle`` returns, the
+      dispatcher reads ``delivery.disposition`` and emits the matching
+      lifecycle hook. Settling manually does not bypass the Observatory.
+    * **Outcome semantics on the edges** — a raised exception is still an
+      outcome: if the delivery is unsettled, it routes through the normal
+      machinery (retry budget and declared terminal fate included). A bare
+      return WITHOUT settling defers the attempt: the delivery is left
+      unsettled and the transport redelivers — this is what makes
+      settle-later-on-a-callback patterns possible, and what makes a
+      forgotten ack safe (redelivery, never silent loss).
+
+    The retry policy boundary: this subscriber IS the retry policy for its
+    consumer. ``retry.max_attempts`` and the backoff curve apply only to the
+    exception backstop above, never to explicit ``delivery.retry(delay=...)``
+    calls — controlling the delay per attempt is the point of the mode.
+
+    This is a distinct root class rather than an ``EventSubscriber`` subclass
+    on purpose: the contracts genuinely differ (event-in vs delivery-in), and
+    declaring the mode by TYPE keeps dispatch free of signature inspection.
+    """
+
+    @abstractmethod
+    async def handle(self, delivery: Delivery) -> None:
+        """Process one delivery attempt, optionally settling it.
+
+        ``delivery.event`` carries the fact; the settlement verbs carry the
+        authority. Raise to fall back to the dispatcher's outcome machinery;
+        return unsettled to defer to redelivery.
+        """
 
 
 class SubscriberMiddleware(ABC):

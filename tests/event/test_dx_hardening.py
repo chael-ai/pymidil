@@ -2,7 +2,6 @@
 
 - zero-subscriber deliveries are NEVER acked (no silent queue-draining);
 - bus.subscribe refuses to guess when multiple consumers are registered;
-- Event mints its own id (uuid4) when none is supplied;
 - the barrels are lazy: importing pymidil / pymidil.event must not require
   the optional transport/CLI dependencies.
 """
@@ -60,7 +59,7 @@ class _RecordingSettlement(Settlement):
 
 
 def _event() -> Event:
-    return Event(source="svc", type="t", data={})
+    return Event(id="EVT-1", source="svc", type="t", data={})
 
 
 # ---- zero subscribers: never ack ----------------------------------------------
@@ -96,19 +95,6 @@ async def test_subscribe_refuses_to_guess_between_consumers():
     bus = _bus_with({"a": _MemConsumer(_Cfg()), "b": _MemConsumer(_Cfg())})
     with pytest.raises(ConsumerError, match="pass\\s+subscribe"):
         bus.subscribe(FunctionSubscriber(handler=lambda e: None))
-
-
-# ---- Event identity: minted when not supplied ----------------------------------
-
-
-def test_event_mints_its_own_id():
-    a, b = Event(source="s", type="t"), Event(source="s", type="t")
-    assert a.id and b.id and a.id != b.id
-    assert a.dedup_key == a.id  # identity flows into dedup as before
-
-
-def test_explicit_id_still_wins():
-    assert Event(id="E-1", source="s", type="t").id == "E-1"
 
 
 # ---- lazy barrels: base import must not require optional deps ------------------

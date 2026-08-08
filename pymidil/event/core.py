@@ -13,8 +13,6 @@ from typing import Any, Literal, Mapping, Optional
 from loguru import logger
 from pydantic import BaseModel, Field
 
-from uuid import uuid4
-
 from pymidil.utils.time import utcnow
 
 
@@ -40,12 +38,7 @@ class Event(BaseModel):
         extensions: (Optional) Extension fields for custom or transport-specific metadata.
     """
 
-    id: str = Field(
-        default_factory=lambda: str(uuid4()),
-        description="Logical identity — stable across every delivery. "
-        "Auto-minted (uuid4) when not supplied; pass an explicit id (or an "
-        "idempotency_key) when consumers must dedup across producer retries.",
-    )
+    id: str = Field(..., description="Logical identity — stable across every delivery")
     source: str = Field(
         ..., description="The context that produced the event (a service)"
     )
@@ -181,6 +174,7 @@ class Delivery:
         self.received_at = received_at or utcnow()
         self._settlement: Settlement = settlement or NoSettlement()
         self._disposition: Optional[str] = None
+        self._disposition_error: Optional[Exception] = None
 
     @property
     def disposition(self) -> Optional[str]:
@@ -192,6 +186,13 @@ class Delivery:
     def settled(self) -> bool:
         """Whether a disposition has already been applied to this delivery."""
         return self._disposition is not None
+
+    @property
+    def disposition_error(self) -> Optional[Exception]:
+        """The error a ``dlq`` disposition carried, if any — recorded so a
+        settlement made by a manual authority can be REPORTED with the same
+        fidelity as one made by the dispatcher."""
+        return self._disposition_error
 
     def _claim(self, disposition: str) -> bool:
         """Latch the first disposition; refuse (loudly) any later one."""
@@ -223,6 +224,7 @@ class Delivery:
     async def dlq(self, error: Optional[Exception] = None) -> None:
         """Divert this event to a dead-letter destination (first-wins latch)."""
         if self._claim("dlq"):
+            self._disposition_error = error
             await self._settlement.dlq(self.event, self.carrier(), error)
 
     @property

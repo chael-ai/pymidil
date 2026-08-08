@@ -88,7 +88,7 @@ class PullEventConsumer(EventConsumer):
             logger.warning(f"Consumer {self.__class__.__name__} already running")
             return
 
-        if not self._subscribers:
+        if not self.has_subscribers:
             logger.warning(
                 f"{self.__class__.__name__} starting with ZERO subscribers — "
                 f"deliveries will be left unsettled (redelivered) until one "
@@ -133,6 +133,7 @@ class PullEventConsumer(EventConsumer):
 
     async def _reset_state(self) -> None:
         self._subscribers.clear()
+        self._manual = None
         if self._loop_task:
             if not self._loop_task.done():
                 self._loop_task.cancel()

@@ -35,6 +35,7 @@ from pymidil.event.producer.base import BaseProducerConfig, EventProducer
 from pymidil.event.subscriber.base import (
     EventSubscriber,
     FunctionSubscriber,
+    ManualSubscriber,
     SubscriberMiddleware,
 )
 from pymidil.event.subscriber.middleware import GroupMiddleware, LoggingMiddleware
@@ -194,6 +195,7 @@ __all__ = [
     # subscribers + middleware
     "EventSubscriber",
     "FunctionSubscriber",
+    "ManualSubscriber",
     "SubscriberMiddleware",
     "GroupMiddleware",
     "LoggingMiddleware",

@@ -11,12 +11,12 @@ from pydantic import BaseModel, ConfigDict, Field
 from dataclasses import dataclass
 
 from pymidil.event.core import Delivery, Event
-from pymidil.exceptions import RetryableEventError
+from pymidil.exceptions import ConsumerError, RetryableEventError
 from pymidil.event.idempotency.policy import IdempotencyPolicy
 from pymidil.event.observability.hooks import DispatchHook
 from pymidil.event.otel import consumer_span
 from pymidil.event.retry import RetryConfig, TransportCapabilities, validate_policy
-from pymidil.event.subscriber.base import EventSubscriber
+from pymidil.event.subscriber.base import EventSubscriber, ManualSubscriber
 
 
 class BaseConsumerConfig(BaseModel):
@@ -76,6 +76,9 @@ class EventConsumer(ABC):
     ) -> None:
         self._config = config
         self._subscribers: Set[EventSubscriber] = set()
+        # Single-authority mode: when set, this subscriber owns settlement and
+        # the aggregation path is bypassed entirely (see subscribe()).
+        self._manual: Optional[ManualSubscriber] = None
         self._subscription_lock = Lock()
         self._dispatch_hooks: List[DispatchHook] = []
         self._idempotency: Optional[IdempotencyPolicy] = idempotency
@@ -137,11 +140,43 @@ class EventConsumer(ABC):
         if self._idempotency is not None:
             await self._idempotency.store.release(key)
 
-    def subscribe(self, subscriber: EventSubscriber) -> None:
+    def subscribe(self, subscriber: EventSubscriber | ManualSubscriber) -> None:
+        """Register a subscriber, enforcing the settlement-authority topology.
+
+        A consumer runs in exactly one of two modes, decided by what you
+        subscribe: AGGREGATION (any number of ``EventSubscriber``s; the
+        dispatcher merges their outcomes and settles) or SINGLE-AUTHORITY
+        (exactly one ``ManualSubscriber``, which settles the delivery itself).
+        Mixing the two would reintroduce the settlement race the modes exist
+        to prevent, so it refuses loudly at wiring time.
+        """
         with self._subscription_lock:
+            if isinstance(subscriber, ManualSubscriber):
+                if self._manual is not None:
+                    raise ConsumerError(
+                        f"{self.name} already has a settlement authority "
+                        f"({type(self._manual).__name__}) — single-authority "
+                        f"mode is exclusive: one ManualSubscriber per consumer."
+                    )
+                if self._subscribers:
+                    raise ConsumerError(
+                        f"{self.name} has {len(self._subscribers)} aggregation "
+                        f"subscriber(s) — a ManualSubscriber cannot share a "
+                        f"consumer: its whole contract is being the SOLE "
+                        f"settlement authority. Use a dedicated consumer."
+                    )
+                self._manual = subscriber
+                return
+            if self._manual is not None:
+                raise ConsumerError(
+                    f"{self.name} is in single-authority mode "
+                    f"({type(self._manual).__name__} owns settlement) — "
+                    f"aggregation subscribers cannot join it. Use a dedicated "
+                    f"consumer."
+                )
             self._subscribers.add(subscriber)
 
-    def unsubscribe(self, subscriber: EventSubscriber) -> None:
+    def unsubscribe(self, subscriber: EventSubscriber | ManualSubscriber) -> None:
         """
         Discard a handler (subscriber).
 
@@ -149,7 +184,16 @@ class EventConsumer(ABC):
             subscriber (EventSubscriber): The subscriber to remove.
         """
         with self._subscription_lock:
-            self._subscribers.discard(subscriber)
+            if subscriber is self._manual:
+                self._manual = None
+                return
+            if isinstance(subscriber, EventSubscriber):
+                self._subscribers.discard(subscriber)
+
+    @property
+    def has_subscribers(self) -> bool:
+        """Whether anything will process deliveries — either mode."""
+        return bool(self._subscribers) or self._manual is not None
 
     async def dispatch(self, delivery: Delivery) -> None:
         """Continue the incoming trace, then run the dispatch lifecycle.
@@ -184,21 +228,17 @@ class EventConsumer(ABC):
         be re-processed.
         """
 
+        if self._manual is not None:
+            await self._dispatch_manual(delivery)
+            return
+
         event = delivery.event
         key = self._dedup_key(event)
         start = time.monotonic()
 
         try:
-            if key is not None:
-                policy = self._idempotency
-                assert policy is not None  # key resolves only with a policy
-                if not await policy.store.claim(key, policy.ttl_seconds):
-                    logger.debug(
-                        f"{self.name} duplicate {event.id} (key={key}) short-circuited"
-                    )
-                    await self._safe_notify_hooks("on_duplicate", delivery)
-                    await delivery.ack()
-                    return
+            if key is not None and not await self._claim_delivery(key, delivery):
+                return
 
             await self._safe_notify_hooks("on_receive", delivery)
 
@@ -235,6 +275,116 @@ class EventConsumer(ABC):
                 f"Dispatcher failed unexpectedly for {self.name} event {event.id}"
             )
             raise
+
+    async def _claim_delivery(self, key: str, delivery: Delivery) -> bool:
+        """Take the idempotency claim; short-circuit (report + ack) a duplicate.
+
+        Returns True when the delivery is claimed and should proceed. Shared by
+        both dispatch modes — dedup is a consumer-level policy, orthogonal to
+        who owns settlement.
+        """
+        policy = self._idempotency
+        assert policy is not None  # key resolves only with a policy
+        if await policy.store.claim(key, policy.ttl_seconds):
+            return True
+        logger.debug(
+            f"{self.name} duplicate {delivery.event.id} (key={key}) short-circuited"
+        )
+        await self._safe_notify_hooks("on_duplicate", delivery)
+        await delivery.ack()
+        return False
+
+    async def _dispatch_manual(self, delivery: Delivery) -> None:
+        """Single-authority dispatch: the ManualSubscriber owns settlement.
+
+        The dispatcher's remaining jobs here are the ones a handler cannot
+        perform for itself:
+
+        * dedup (consumer-level policy, same as aggregation mode);
+        * TRUTHFUL REPORTING — after the handler returns, the latch
+          (``delivery.disposition``) is the record of what physically
+          happened, and the matching lifecycle hook is emitted from it, so
+          manual settlement never bypasses the Observatory;
+        * the exception backstop — an unsettled raise is still an outcome and
+          routes through the normal machinery (retry budget, declared fate);
+        * the deferral rule — an unsettled clean return is a DECISION, not a
+          bug: the delivery is left for the transport to redeliver (this is
+          what makes settle-later-on-callback and checkpoint patterns safe —
+          a forgotten ack costs a redelivery, never a lost message).
+        """
+        manual = self._manual
+        assert manual is not None
+        event = delivery.event
+        key = self._dedup_key(event)
+        start = time.monotonic()
+
+        try:
+            if key is not None and not await self._claim_delivery(key, delivery):
+                return
+
+            await self._safe_notify_hooks("on_receive", delivery)
+
+            try:
+                await manual.handle(delivery)
+            except Exception as exc:
+                if delivery.settled:
+                    # The latch is the truth; the exception is post-settlement
+                    # noise — report the settlement, surface the error loudly.
+                    logger.error(
+                        f"{self.name}: {type(manual).__name__} settled event "
+                        f"{event.id} as '{delivery.disposition}' and then "
+                        f"raised: {exc!r}"
+                    )
+                    await self._report_settlement(delivery, start)
+                else:
+                    outcome = self._determine_outcome(
+                        {type(manual).__name__: exc},
+                        (time.monotonic() - start) * 1000,
+                        event,
+                    )
+                    outcome = self._bound_retries(outcome, delivery)
+                    await self._handle_outcome(outcome, delivery)
+                if key is not None and delivery.disposition != "ack":
+                    await self._release_claim(key)
+                return
+
+            if delivery.settled:
+                await self._report_settlement(delivery, start)
+            else:
+                logger.debug(
+                    f"{self.name}: {type(manual).__name__} deferred event "
+                    f"{event.id} (returned unsettled) — the transport will "
+                    f"redeliver"
+                )
+            if key is not None and delivery.disposition != "ack":
+                # Deferred or non-terminal: a redelivery must be free to
+                # re-process; only a completed (acked) delivery keeps its claim.
+                await self._release_claim(key)
+
+        except Exception:
+            if key is not None:
+                await self._release_claim(key)
+            logger.exception(
+                f"Dispatcher failed unexpectedly for {self.name} event {event.id}"
+            )
+            raise
+
+    async def _report_settlement(self, delivery: Delivery, start: float) -> None:
+        """Emit the lifecycle hook matching what the latch says PHYSICALLY
+        happened — reporting-from-the-record, the manual-mode counterpart of
+        ``_handle_outcome``'s decide-then-act."""
+        duration_ms = (time.monotonic() - start) * 1000
+        match delivery.disposition:
+            case "ack":
+                await self._safe_notify_hooks(
+                    "on_complete", delivery, duration_ms=duration_ms
+                )
+            case "retry":
+                await self._safe_notify_hooks("on_retry", delivery, errors=[])
+            case "dlq":
+                await self._safe_notify_hooks(
+                    "on_dead_letter", delivery, error=delivery.disposition_error
+                )
 
     async def _execute_subscribers(self, event: Event) -> dict[str, Any]:
         """Execute all subscribers concurrently, preserving subscriber identity.
