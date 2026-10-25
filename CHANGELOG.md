@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## Unreleased
 
+### Bug Fixes
+
+- **Auth: tokens are now checked against the configured app client.**
+  `authorize_request` and `CognitoAuthMiddleware` pass `MIDIL__AUTH__CLIENT_ID`
+  as the expected audience, so ID tokens issued to other app clients in the
+  same user pool are rejected (401). Previously any client's token was accepted.
+- **Auth: one authorizer per pool/client.** `authorize_request` built a new
+  `CognitoJWTAuthorizer` per request, re-fetching the JWKS every time; it is now
+  cached (`get_cognito_authorizer`), as is the middleware's.
+- **Web: `JSONAPIResponse` works as `MidilAPI`'s default response class.** It
+  only accepted `Document` objects, but FastAPI passes already-serialized content,
+  so every route on a `MidilAPI` app returned 500. It now accepts both.
+
 ## v0.2.0 (2026-07-23)
 
 The Observatory release: pymidil is now the instrumentation and control SDK for
