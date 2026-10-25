@@ -1,4 +1,4 @@
-from typing import Dict, Any, Callable, Awaitable
+from typing import Dict, Any, Callable, Awaitable, Optional
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request
 from pymidil.auth.interfaces.authorizer import AuthZProvider
@@ -177,8 +177,16 @@ class CognitoAuthMiddleware(BaseAuthMiddleware):
 
     """
 
+    _authorizer: Optional[CognitoJWTAuthorizer] = None
+
     async def authorizer(self, request: Request) -> AuthZProvider:
-        cognito_settings = get_settings().get_auth("cognito")
-        return CognitoJWTAuthorizer(
-            user_pool_id=cognito_settings.user_pool_id, region=cognito_settings.region
-        )
+        # Built once per middleware so the JWKS cache survives across requests.
+        # Only ID tokens issued to the configured app client (aud) are accepted.
+        if self._authorizer is None:
+            cognito_settings = get_settings().get_auth("cognito")
+            self._authorizer = CognitoJWTAuthorizer(
+                user_pool_id=cognito_settings.user_pool_id,
+                region=cognito_settings.region,
+                audience=cognito_settings.client_id,
+            )
+        return self._authorizer

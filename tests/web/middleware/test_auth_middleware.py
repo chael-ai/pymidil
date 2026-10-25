@@ -169,7 +169,7 @@ class TestCognitoAuthMiddleware:
         # Verify
         assert response.status_code == 200
         mock_authorizer_class.assert_called_once_with(
-            user_pool_id="test-pool-id", region="us-east-1"
+            user_pool_id="test-pool-id", region="us-east-1", audience="test-client-id"
         )
 
     @pytest.mark.anyio
