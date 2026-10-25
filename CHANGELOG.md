@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## Unreleased
 
+## v0.2.1 (2026-10-25)
+
 ### Bug Fixes
 
 - **Auth: tokens are now checked against the configured app client.**
